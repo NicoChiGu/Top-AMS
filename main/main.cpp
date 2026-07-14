@@ -106,6 +106,35 @@ inline void webfpr(const string& str) {
     last_ws_log = str;
 }
 
+// @brief 判断WebSocket配置项是否为电机反向输出设置
+inline bool is_motor_reverse_setting(const std::string& name) {
+    constexpr char suffix[] = "_reverse";
+    constexpr size_t suffix_size = sizeof(suffix) - 1;
+    return name.rfind("ext", 0) == 0 &&
+           name.size() > suffix_size &&
+           name.compare(name.size() - suffix_size, suffix_size, suffix) == 0;
+}
+
+// @brief 将单个WebSocket配置项的当前值重新同步到前端
+inline void sync_ws_value(const std::string& name) {
+    auto it = mesp::ws_value_to_json.find(name);
+    if (it == mesp::ws_value_to_json.end())
+        return;
+
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    root.createNestedArray("data");
+    it->second(doc);
+    mesp::sendJson(doc);
+}
+
+// @brief 电机方向配置只能在系统完全空闲时修改
+inline bool can_update_motor_direction() {
+    return !system_locked.get_value() &&
+           operation_status.get_value() == "idle" &&
+           motor_running.get_value() == 0;
+}
+
 // @brief 控制电机运行(前向或后向)
 // @param moter_id 电机编号,从 1 开始
 // @param fwd 标识方向，true 表示前向，false 表示后向
@@ -121,20 +150,26 @@ inline void motor_run(int motor_id, bool fwd, T&& t) {
         config::LED_R = GPIO_NUM_NC;
         config::LED_L = GPIO_NUM_NC;
     }//使用到了通道7,关闭代码中的LED控制
-    
+
+    auto& motor = config::motors[motor_id];
+
     // 更新电机运行状态
     motor_running = motor_id + 1; // 恢复为1-based索引
-    webfpr(std::string("电机 ") + std::to_string(motor_id + 1) + (fwd ? " 正转" : " 反转"));
-    
-    if (fwd) {
-        esp::gpio_out(config::motors[motor_id].forward, true);
-        mstd::delay(std::forward<T>(t));// 使用传入的延时
-        esp::gpio_out(config::motors[motor_id].forward, false);
-    } else {
-        esp::gpio_out(config::motors[motor_id].backward, true);
-        mstd::delay(std::forward<T>(t));// 使用传入的延时
-        esp::gpio_out(config::motors[motor_id].backward, false);
-    }
+
+    // 运行开始后快照配置，确保一次动作始终使用同一个物理方向。
+    const bool reverse_output = motor.reverse_output.get_value();
+    const bool physical_forward = fwd != reverse_output;
+    const gpio_num_t active_gpio = physical_forward ? motor.forward : motor.backward;
+    const gpio_num_t inactive_gpio = physical_forward ? motor.backward : motor.forward;
+
+    webfpr(std::string("电机 ") + std::to_string(motor_id + 1) +
+           (fwd ? " 正转" : " 反转") + (reverse_output ? "（反向输出）" : ""));
+
+    // 保证另一方向保持低电平，再驱动本次动作选择的GPIO。
+    esp::gpio_out(inactive_gpio, false);
+    esp::gpio_out(active_gpio, true);
+    mstd::delay(std::forward<T>(t));// 使用传入的延时
+    esp::gpio_out(active_gpio, false);
     
     // 电机运行完成，清除状态
     motor_running = 0;
@@ -691,7 +726,15 @@ extern "C" void app_main() {
                             std::string name = obj["name"].as<std::string>();
                             auto it = mesp::ws_value_update.find(name);
                             if (it != mesp::ws_value_update.end()) {
-                                it->second(obj);//更新值
+                                const bool is_reverse_setting = is_motor_reverse_setting(name);
+                                if (is_reverse_setting && !can_update_motor_direction()) {
+                                    webfpr("系统忙碌，无法修改电机输出方向");
+                                    sync_ws_value(name);//拒绝修改并恢复前端显示
+                                } else {
+                                    it->second(obj);//更新值
+                                    if (is_reverse_setting)
+                                        sync_ws_value(name);//向所有客户端同步持久化后的布尔值
+                                }
                             }
 
                             if (name == "device_serial") {//需要连接mqtt,放这里感觉有些耦合

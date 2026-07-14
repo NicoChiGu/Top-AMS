@@ -281,7 +281,7 @@
         .channel-table {
             width: 100%;
             border-collapse: collapse;
-            /* min-width: 800px; */
+            min-width: 1040px;
         }
 
         .channel-table th {
@@ -530,6 +530,47 @@
             color: #555;
         }
 
+        .direction-control {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+        }
+
+        .direction-glyph {
+            color: #7f8c8d;
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        .direction-control .switch {
+            flex: 0 0 auto;
+        }
+
+        .direction-control input:checked + .slider {
+            background-color: var(--warning-color);
+        }
+
+        .direction-status {
+            min-width: 2em;
+            color: #7f8c8d;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .direction-control.reversed .direction-status {
+            color: var(--warning-color);
+        }
+
+        .switch input:focus-visible + .slider {
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.2);
+        }
+
+        .switch input:disabled + .slider {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
         .btn:disabled,
         .action-btn:disabled {
             opacity: 0.5;
@@ -748,6 +789,7 @@
                             <th>退料时间</th>
                             <th>温度</th>
                             <th>续料通道</th>
+                            <th>输出方向</th>
                             <th>电机控制</th>
                         </tr>
                     </thead>
@@ -776,6 +818,10 @@
 
                 .channel-table thead {
                     display: none;
+                }
+
+                .channel-table {
+                    min-width: 0;
                 }
 
                 .channel-table tr {
@@ -866,6 +912,19 @@
                 </select>
             </td>
 
+            <td data-label="输出方向">
+                <div class="direction-control" id="ext${ch.id}_reverse_control">
+                    <span class="direction-glyph" aria-hidden="true">↔</span>
+                    <label class="switch" title="交换该通道的正反向GPIO输出">
+                        <input type="checkbox" class="motor-reverse-toggle" id="ext${ch.id}_reverse"
+                            aria-label="通道 ${ch.id} 反向输出"
+                            onchange="toggleMotorReverse(${ch.id}, this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                    <span class="direction-status" id="ext${ch.id}_reverse_status">正常</span>
+                </div>
+            </td>
+
             <td data-label="电机控制" class="btn-group">
                 <button class="btn primary" onclick="sendCommand('motor_forward',${ch.id})">正转</button>
                 <button class="btn warning" onclick="sendCommand('motor_backward',${ch.id})">反转</button>
@@ -898,6 +957,7 @@
         let systemLocked = false;
         let motorRunning = 0;
         let operationStatus = 'idle';
+        const motorReverseStates = new Map();
 
         // 更新按钮状态
         function updateButtonStates() {
@@ -938,6 +998,13 @@
             if (extruderSelect) {
                 extruderSelect.disabled = isLocked;
             }
+
+            // 方向配置会影响后续GPIO输出，任何电机运行时都禁止修改。
+            document.querySelectorAll('.motor-reverse-toggle').forEach(toggle => {
+                const directionBusy = isLocked || motorRunning > 0;
+                toggle.disabled = directionBusy;
+                toggle.title = directionBusy ? '系统忙碌，暂时无法修改输出方向' : '';
+            });
         }
 
         ws.onmessage = function (event) {
@@ -1016,6 +1083,11 @@
                         if (statusEl) {
                             statusEl.textContent = (item.value == 1) ? '开启' : '关闭';
                         }
+                    } else if (/^ext\d+_reverse$/.test(item.name)) {
+                        const motorId = parseInt(item.name.match(/^ext(\d+)_reverse$/)[1]);
+                        const reversed = item.value === true || item.value === 1;
+                        motorReverseStates.set(motorId, reversed);
+                        updateMotorReverseDisplay(motorId, reversed);
                     } else {
                         const element = document.getElementById(item.name);
                         const propertyPriority = ['value', 'textContent', 'innerHTML'];
@@ -1099,6 +1171,14 @@
 
         //发送键值对
         function sendKeyValue(_key, _value) {
+            const reverseMatch = _key.match(/^ext(\d+)_reverse$/);
+            if (reverseMatch && (systemLocked || operationStatus !== 'idle' || motorRunning > 0)) {
+                const motorId = parseInt(reverseMatch[1]);
+                updateMotorReverseDisplay(motorId, motorReverseStates.get(motorId) || false);
+                addLog('系统忙碌，无法修改电机输出方向', 'warning');
+                return;
+            }
+
             // 如果系统锁定，阻止某些关键参数的修改
             if (systemLocked && (_key.startsWith('ext') && (_key.includes('load_time') || _key.includes('uload_time')))) {
                 addLog('系统锁定中，无法修改参数', 'warning');
@@ -1115,6 +1195,36 @@
             };
             ws.send(JSON.stringify(doc));
             addLog(`更新参数: ${_key} = ${_value}`, 'info');
+        }
+
+        // 更新通道方向开关、文字和警示色
+        function updateMotorReverseDisplay(motorId, reversed) {
+            const toggle = document.getElementById(`ext${motorId}_reverse`);
+            const control = document.getElementById(`ext${motorId}_reverse_control`);
+            const status = document.getElementById(`ext${motorId}_reverse_status`);
+
+            if (toggle) {
+                toggle.checked = reversed;
+            }
+            if (control) {
+                control.classList.toggle('reversed', reversed);
+            }
+            if (status) {
+                status.textContent = reversed ? '反向' : '正常';
+            }
+        }
+
+        // 切换单个通道的反向输出；固件端会再次检查忙碌状态。
+        function toggleMotorReverse(motorId, reversed) {
+            if (systemLocked || operationStatus !== 'idle' || motorRunning > 0) {
+                updateMotorReverseDisplay(motorId, motorReverseStates.get(motorId) || false);
+                addLog('系统忙碌，无法修改电机输出方向', 'warning');
+                return;
+            }
+
+            motorReverseStates.set(motorId, reversed);
+            updateMotorReverseDisplay(motorId, reversed);
+            sendKeyValue(`ext${motorId}_reverse`, reversed);
         }
 
         // 切换辅助进料开关

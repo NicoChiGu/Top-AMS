@@ -28,6 +28,7 @@ namespace config {
         mesp::wsStoreValue<int> temper;
         mesp::wsStoreValue<int> load_time;
         mesp::wsStoreValue<int> uload_time;
+        mesp::wsStoreValue<bool> reverse_output;// 是否交换正反向GPIO输出
 
         motor() = default;
         motor(int i, gpio_num_t f, gpio_num_t b)
@@ -38,7 +39,8 @@ namespace config {
               next_channel("ext" + std::to_string(i) + "_next", i),
               temper("ext" + std::to_string(i) + "_temper", 250),
               load_time("ext" + std::to_string(i) + "_load_time", 6000),
-              uload_time("ext" + std::to_string(i) + "_uload_time", 5000) {}
+              uload_time("ext" + std::to_string(i) + "_uload_time", 5000),
+              reverse_output("ext" + std::to_string(i) + "_reverse", false) {}
     };// motor
 
 

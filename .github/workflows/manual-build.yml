@@ -1,0 +1,62 @@
+name: Manual firmware build
+
+on:
+  workflow_dispatch:
+    inputs:
+      motor_config:
+        description: Select the motor channel configuration to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - MOTORS_4
+          - MOTORS_6
+          - MOTORS_8
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.motor_config }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        motor_config: ${{ fromJSON(inputs.motor_config == 'all' && '["MOTORS_4","MOTORS_6","MOTORS_8"]' || format('["{0}"]', inputs.motor_config)) }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Build and merge firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3.2
+          target: esp32c3
+          command: |
+            set -eu
+            CONFIG="${{ matrix.motor_config }}"
+            mkdir -p dist
+            idf.py build -DMOTOR_CONFIG="${CONFIG}"
+            python -m esptool --chip esp32c3 merge_bin \
+              -o "dist/Top-AMS-${CONFIG}.bin" \
+              --flash_mode dio --flash_freq 80m --flash_size 4MB \
+              0x0 build/bootloader/bootloader.bin \
+              0x10000 build/Top-AMS.bin \
+              0x8000 build/partition_table/partition-table.bin
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Top-AMS-${{ matrix.motor_config }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/Top-AMS-${{ matrix.motor_config }}.bin
+            build/Top-AMS.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/flasher_args.json
