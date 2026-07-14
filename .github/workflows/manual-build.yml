@@ -1,4 +1,4 @@
-name: Manual firmware build
+name: Manual firmware build and release
 
 on:
   workflow_dispatch:
@@ -13,19 +13,77 @@ on:
           - MOTORS_4
           - MOTORS_6
           - MOTORS_8
+      publish_release:
+        description: Publish the compiled firmware to GitHub Releases
+        required: true
+        default: false
+        type: boolean
+      release_tag:
+        description: Release tag required when publishing (for example v1.0.0)
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: Prepare build
+    runs-on: ubuntu-latest
+    outputs:
+      motor_configs: ${{ steps.matrix.outputs.motor_configs }}
+      expected_count: ${{ steps.matrix.outputs.expected_count }}
+
+    steps:
+      - name: Resolve build matrix
+        id: matrix
+        env:
+          SELECTED_CONFIG: ${{ inputs.motor_config }}
+        run: |
+          if [ "${SELECTED_CONFIG}" = "all" ]; then
+            echo 'motor_configs=["MOTORS_4","MOTORS_6","MOTORS_8"]' >> "${GITHUB_OUTPUT}"
+            echo 'expected_count=3' >> "${GITHUB_OUTPUT}"
+          else
+            printf 'motor_configs=["%s"]\n' "${SELECTED_CONFIG}" >> "${GITHUB_OUTPUT}"
+            echo 'expected_count=1' >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Validate release inputs
+        if: ${{ inputs.publish_release }}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -z "${RELEASE_TAG}" ]; then
+            echo 'release_tag is required when publish_release is enabled.' >&2
+            exit 1
+          fi
+          case "${RELEASE_TAG}" in
+            v*) ;;
+            *)
+              echo 'release_tag must start with v, for example v1.0.0.' >&2
+              exit 1
+              ;;
+          esac
+          case "${RELEASE_TAG}" in
+            *[[:space:]]*)
+              echo 'release_tag must not contain whitespace.' >&2
+              exit 1
+              ;;
+          esac
+          if ! git check-ref-format "refs/tags/${RELEASE_TAG}"; then
+            echo 'release_tag is not a valid Git tag name.' >&2
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.motor_config }}
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        motor_config: ${{ fromJSON(inputs.motor_config == 'all' && '["MOTORS_4","MOTORS_6","MOTORS_8"]' || format('["{0}"]', inputs.motor_config)) }}
+        motor_config: ${{ fromJSON(needs.prepare.outputs.motor_configs) }}
 
     steps:
       - name: Checkout source
@@ -60,3 +118,61 @@ jobs:
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
             build/flasher_args.json
+
+  release:
+    name: Publish ${{ inputs.release_tag }}
+    if: ${{ inputs.publish_release }}
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download compiled firmware
+        uses: actions/download-artifact@v8
+        with:
+          pattern: Top-AMS-MOTORS_*
+          path: release-artifacts
+
+      - name: Collect merged firmware
+        env:
+          EXPECTED_COUNT: ${{ needs.prepare.outputs.expected_count }}
+        run: |
+          set -eu
+          mkdir -p release-files
+          find release-artifacts -type f -name 'Top-AMS-MOTORS_*.bin' -exec cp '{}' release-files/ \;
+          ACTUAL_COUNT="$(find release-files -maxdepth 1 -type f -name 'Top-AMS-MOTORS_*.bin' | wc -l)"
+          if [ "${ACTUAL_COUNT}" -ne "${EXPECTED_COUNT}" ]; then
+            echo "Expected ${EXPECTED_COUNT} merged firmware file(s), found ${ACTUAL_COUNT}." >&2
+            exit 1
+          fi
+          find release-files -maxdepth 1 -type f -name 'Top-AMS-MOTORS_*.bin' -print
+
+      - name: Publish GitHub Release
+        id: publish
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          name: Top-AMS ${{ inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            ## 固件说明
+
+            - 构建配置：`${{ inputs.motor_config }}`
+            - 芯片：`ESP32-C3`
+            - ESP-IDF：`v5.3.2`
+
+            `Top-AMS-MOTORS_*.bin` 为合并固件，请从地址 `0x0` 写入。
+          files: |
+            release-files/Top-AMS-MOTORS_*.bin
+
+      - name: Add release link to summary
+        env:
+          RELEASE_URL: ${{ steps.publish.outputs.url }}
+        run: |
+          echo "## Release published" >> "${GITHUB_STEP_SUMMARY}"
+          echo "[${RELEASE_URL}](${RELEASE_URL})" >> "${GITHUB_STEP_SUMMARY}"
