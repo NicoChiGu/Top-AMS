@@ -14,6 +14,10 @@
             --warning-color: #f39c12;
             --background-gradient: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
             --card-bg: rgba(255, 255, 255, 0.98);
+            --text-secondary: #566573;
+            --text-tertiary: #7f8c8d;
+            --signal-muted: #bdc3c7;
+            --status-inset: rgba(44, 62, 80, 0.07);
             --border-radius: 12px;
             --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
             --transition: all 0.3s ease;
@@ -31,6 +35,8 @@
         .status-bar {
             display: flex;
             justify-content: space-between;
+            align-items: center;
+            gap: 24px;
             padding: 12px 24px;
             background: rgba(255, 255, 255, 0.95);
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
@@ -45,6 +51,106 @@
             display: flex;
             align-items: center;
             gap: 8px;
+        }
+
+        .network-status {
+            min-width: 0;
+        }
+
+        .wifi-meter {
+            width: 22px;
+            height: 18px;
+            display: inline-flex;
+            align-items: flex-end;
+            gap: 2px;
+            flex: 0 0 auto;
+            color: var(--signal-muted);
+        }
+
+        .wifi-bar {
+            width: 4px;
+            background: var(--signal-muted);
+            border-radius: 2px 2px 1px 1px;
+            opacity: 0.45;
+            transition: background-color 0.2s ease, opacity 0.2s ease;
+        }
+
+        .wifi-bar:nth-child(1) { height: 5px; }
+        .wifi-bar:nth-child(2) { height: 9px; }
+        .wifi-bar:nth-child(3) { height: 13px; }
+        .wifi-bar:nth-child(4) { height: 17px; }
+
+        .wifi-bar.active {
+            background: currentColor;
+            opacity: 1;
+        }
+
+        .wifi-meter.signal-strong,
+        .wifi-meter.signal-good {
+            color: var(--success-color);
+        }
+
+        .wifi-meter.signal-fair {
+            color: var(--warning-color);
+        }
+
+        .wifi-meter.signal-weak,
+        .wifi-meter.signal-disconnected {
+            color: var(--danger-color);
+        }
+
+        .network-copy {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .network-primary,
+        .network-secondary {
+            min-width: 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .wifi-ssid {
+            max-width: 280px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--primary-color);
+            font-weight: 600;
+        }
+
+        .wifi-quality {
+            flex: 0 0 auto;
+            padding: 1px 6px;
+            border-radius: 4px;
+            background: var(--status-inset);
+            color: var(--text-secondary);
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .wifi-quality.signal-strong,
+        .wifi-quality.signal-good {
+            color: var(--success-color);
+        }
+
+        .wifi-quality.signal-fair {
+            color: var(--warning-color);
+        }
+
+        .wifi-quality.signal-weak,
+        .wifi-quality.signal-disconnected {
+            color: var(--danger-color);
+        }
+
+        .network-secondary {
+            color: var(--text-tertiary);
+            font-size: 12px;
+            font-variant-numeric: tabular-nums;
         }
 
         .status-dot {
@@ -623,6 +729,31 @@
         }
 
         @media (max-width: 768px) {
+            .status-bar {
+                align-items: flex-start;
+                gap: 12px;
+                padding: 10px 16px;
+            }
+
+            .network-status {
+                flex: 1 1 auto;
+                align-items: flex-start;
+            }
+
+            .wifi-ssid {
+                max-width: min(42vw, 220px);
+            }
+
+            .network-secondary {
+                flex-wrap: wrap;
+                row-gap: 0;
+            }
+
+            .mqtt-status-indicator {
+                padding-top: 2px;
+                flex: 0 0 auto;
+            }
+
             .control-panel {
                 margin: 16px;
             }
@@ -653,11 +784,27 @@
 
 <body>
     <div class="status-bar">
-        <div class="status-indicator">
+        <div class="status-indicator network-status" id="wifi-status" aria-live="polite">
             <span class="status-dot" id="esp-dot"></span>
-            <span id="wifi-status">ESP32</span>
+            <span class="wifi-meter" id="wifi-meter" role="img" aria-label="Wi-Fi 信号不可用">
+                <span class="wifi-bar"></span>
+                <span class="wifi-bar"></span>
+                <span class="wifi-bar"></span>
+                <span class="wifi-bar"></span>
+            </span>
+            <span class="network-copy">
+                <span class="network-primary">
+                    <span class="wifi-ssid" id="wifi-ssid">正在连接 ESP32…</span>
+                    <span class="wifi-quality" id="wifi-quality">等待</span>
+                </span>
+                <span class="network-secondary">
+                    <span id="wifi-ip">IP --</span>
+                    <span aria-hidden="true">·</span>
+                    <span id="wifi-rssi">-- dBm</span>
+                </span>
+            </span>
         </div>
-        <div class="status-indicator">
+        <div class="status-indicator mqtt-status-indicator">
             <span class="status-dot" id="mqtt-dot"></span>
             <span id="mqtt-status">MQTT</span>
         </div>
@@ -939,17 +1086,110 @@
         const ws = new WebSocket((window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.hostname + '/ws');
         const espDot = document.getElementById('esp-dot');
         const mqttDot = document.getElementById('mqtt-dot');
+        const wifiMeter = document.getElementById('wifi-meter');
+        const wifiSsid = document.getElementById('wifi-ssid');
+        const wifiQuality = document.getElementById('wifi-quality');
+        const wifiIp = document.getElementById('wifi-ip');
+        const wifiRssi = document.getElementById('wifi-rssi');
         let currentChannels = [];
+        let wifiRefreshTimer = null;
+        const wifiState = {
+            connected: null,
+            ssid: '',
+            ip: '',
+            rssi: null
+        };
+
+        function getWifiSignal(rssi) {
+            if (!Number.isFinite(rssi)) return { level: 0, label: '不可用', stateClass: 'signal-disconnected' };
+            if (rssi >= -55) return { level: 4, label: '强', stateClass: 'signal-strong' };
+            if (rssi >= -67) return { level: 3, label: '良好', stateClass: 'signal-good' };
+            if (rssi >= -75) return { level: 2, label: '一般', stateClass: 'signal-fair' };
+            return { level: 1, label: '弱', stateClass: 'signal-weak' };
+        }
+
+        function setStatusText(element, text) {
+            if (element.textContent !== text) {
+                element.textContent = text;
+            }
+        }
+
+        function renderWifiStatus(pendingLabel = '') {
+            const stateClasses = ['signal-strong', 'signal-good', 'signal-fair', 'signal-weak', 'signal-disconnected'];
+            let signal = { level: 0, label: pendingLabel || '断开', stateClass: 'signal-disconnected' };
+
+            if (wifiState.connected === true) {
+                signal = getWifiSignal(wifiState.rssi);
+                setStatusText(wifiSsid, wifiState.ssid || '未知网络');
+                wifiSsid.title = wifiState.ssid || '';
+                setStatusText(wifiIp, `IP ${wifiState.ip || '--'}`);
+                setStatusText(wifiRssi, Number.isFinite(wifiState.rssi) ? `${wifiState.rssi} dBm` : '-- dBm');
+            } else if (wifiState.connected === null) {
+                setStatusText(wifiSsid, pendingLabel || '正在读取网络…');
+                wifiSsid.title = '';
+                setStatusText(wifiIp, 'IP --');
+                setStatusText(wifiRssi, '-- dBm');
+                signal = { level: 0, label: '等待', stateClass: '' };
+            } else {
+                setStatusText(wifiSsid, pendingLabel || 'Wi-Fi 未连接');
+                wifiSsid.title = '';
+                setStatusText(wifiIp, 'IP --');
+                setStatusText(wifiRssi, '-- dBm');
+            }
+
+            wifiMeter.classList.remove(...stateClasses);
+            wifiQuality.classList.remove(...stateClasses);
+            if (signal.stateClass) {
+                wifiMeter.classList.add(signal.stateClass);
+                wifiQuality.classList.add(signal.stateClass);
+            }
+            setStatusText(wifiQuality, signal.label);
+            wifiMeter.setAttribute('aria-label', `Wi-Fi 信号${signal.label}`);
+            wifiMeter.querySelectorAll('.wifi-bar').forEach((bar, index) => {
+                bar.classList.toggle('active', index < signal.level);
+            });
+        }
+
+        function requestWifiStatus() {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: { command: 'get_wifi_status' } }));
+            }
+        }
+
+        function startWifiRefresh() {
+            stopWifiRefresh();
+            wifiRefreshTimer = window.setInterval(requestWifiStatus, 5000);
+        }
+
+        function stopWifiRefresh() {
+            if (wifiRefreshTimer !== null) {
+                window.clearInterval(wifiRefreshTimer);
+                wifiRefreshTimer = null;
+            }
+        }
+
+        function markWifiUnavailable(label) {
+            wifiState.connected = false;
+            wifiState.ssid = '';
+            wifiState.ip = '';
+            wifiState.rssi = null;
+            renderWifiStatus(label);
+        }
 
         ws.onopen = function () {
             espDot.classList.add('connected');
             espDot.classList.remove('disconnected');
+            wifiState.connected = null;
+            renderWifiStatus('正在读取网络…');
+            startWifiRefresh();
             addLog('WebSocket连接已建立', 'success');
         };
 
         ws.onclose = function () {
             espDot.classList.add('disconnected');
             espDot.classList.remove('connected');
+            stopWifiRefresh();
+            markWifiUnavailable('ESP32 连接已断开');
             addLog('WebSocket连接已关闭', 'warning');
         };
 
@@ -1009,10 +1249,23 @@
 
         ws.onmessage = function (event) {
             const doc = JSON.parse(event.data);
+            let wifiStateChanged = false;
             if (doc.data) {
                 doc.data.forEach(item => {
                     //MQTT的先特化处理
-                    if (item.name == 'MQTT_done') {
+                    if (item.name == 'wifi_connected') {
+                        wifiState.connected = item.value === true || item.value === 1;
+                        wifiStateChanged = true;
+                    } else if (item.name == 'wifi_ssid') {
+                        wifiState.ssid = typeof item.value === 'string' ? item.value : '';
+                        wifiStateChanged = true;
+                    } else if (item.name == 'wifi_ip') {
+                        wifiState.ip = typeof item.value === 'string' ? item.value : '';
+                        wifiStateChanged = true;
+                    } else if (item.name == 'wifi_rssi') {
+                        wifiState.rssi = item.value !== null && Number.isFinite(Number(item.value)) ? Number(item.value) : null;
+                        wifiStateChanged = true;
+                    } else if (item.name == 'MQTT_done') {
                         if (item.value) {
                             mqttDot.classList.add('connected');
                             mqttDot.classList.remove('disconnected');
@@ -1103,12 +1356,21 @@
                     }
                 });
             }
+            if (wifiStateChanged) {
+                if (!wifiState.connected) {
+                    wifiState.ssid = '';
+                    wifiState.ip = '';
+                    wifiState.rssi = null;
+                }
+                renderWifiStatus();
+            }
             if (doc.log) {
                 addLog(doc.log, 'info');
             }
         };
 
         ws.onerror = function (error) {
+            markWifiUnavailable('ESP32 连接异常');
             addLog('WebSocket错误: ' + error.message, 'error');
         };
 

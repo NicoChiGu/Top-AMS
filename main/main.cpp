@@ -106,6 +106,49 @@ inline void webfpr(const string& str) {
     last_ws_log = str;
 }
 
+// @brief 将当前Wi-Fi运行状态发送给指定WebSocket客户端
+// @note 该数据只读且不持久化；未连接时清空网络字段，避免前端显示旧值
+inline void send_wifi_status(AsyncWebSocketClient* client) {
+    if (client == nullptr)
+        return;
+
+    const bool connected = WiFi.status() == WL_CONNECTED;
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    JsonArray data = root.createNestedArray("data");
+
+    JsonObject connected_item = data.createNestedObject();
+    connected_item["name"] = "wifi_connected";
+    connected_item["value"] = connected;
+
+    JsonObject ssid_item = data.createNestedObject();
+    ssid_item["name"] = "wifi_ssid";
+    ssid_item["value"] = connected ? WiFi.SSID() : String();
+
+    JsonObject ip_item = data.createNestedObject();
+    ip_item["name"] = "wifi_ip";
+    String local_ip_text;
+    if (connected) {
+        const IPAddress local_ip = WiFi.localIP();
+        const bool has_local_ip = local_ip[0] != 0 || local_ip[1] != 0 ||
+                                  local_ip[2] != 0 || local_ip[3] != 0;
+        if (has_local_ip)
+            local_ip_text = local_ip.toString();
+    }
+    ip_item["value"] = local_ip_text;
+
+    JsonObject rssi_item = data.createNestedObject();
+    rssi_item["name"] = "wifi_rssi";
+    if (connected)
+        rssi_item["value"] = WiFi.RSSI();
+    else
+        rssi_item["value"] = nullptr;
+
+    String msg;
+    serializeJson(doc, msg);
+    client->text(msg);
+}
+
 // @brief 判断WebSocket配置项是否为电机反向输出设置
 inline bool is_motor_reverse_setting(const std::string& name) {
     constexpr char suffix[] = "_reverse";
@@ -700,6 +743,8 @@ extern "C" void app_main() {
                 fpr(last_ws_log);
                 webfpr(last_ws_log);
 
+                send_wifi_status(client);
+
                 JsonDocument doc;
                 JsonObject root = doc.to<JsonObject>();
                 root.createNestedArray("data");// 创建data数组
@@ -747,7 +792,9 @@ extern "C" void app_main() {
 
                 const std::string command = doc["action"]["command"] | string("_null");
                 if (command != "_null") {//处理命令json
-                    if (command == "motor_forward") {//电机前向控制
+                    if (command == "get_wifi_status") {
+                        send_wifi_status(client);
+                    } else if (command == "motor_forward") {//电机前向控制
                         int motor_id = doc["action"]["value"] | -1;
                         async_channel.emplace(
                             [motor_id]() {
