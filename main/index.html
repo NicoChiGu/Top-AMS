@@ -16,8 +16,13 @@
             --card-bg: rgba(255, 255, 255, 0.98);
             --text-secondary: #566573;
             --text-tertiary: #7f8c8d;
+            --text-muted: #95a5a6;
             --signal-muted: #bdc3c7;
             --status-inset: rgba(44, 62, 80, 0.07);
+            --diagnostic-surface: rgba(255, 255, 255, 0.82);
+            --diagnostic-inset: rgba(44, 62, 80, 0.045);
+            --diagnostic-border: rgba(44, 62, 80, 0.12);
+            --diagnostic-border-soft: rgba(44, 62, 80, 0.07);
             --border-radius: 12px;
             --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
             --transition: all 0.3s ease;
@@ -339,7 +344,7 @@
         }
 
         .log-content {
-            height: 800px;
+            height: 420px;
             overflow-y: auto;
             background: #fff;
             padding: 12px;
@@ -370,6 +375,374 @@
 
         .log-entry.success {
             color: #27ae60;
+        }
+
+        .diagnostic-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .diagnostic-title h3,
+        .diagnostic-title p {
+            margin: 0;
+        }
+
+        .diagnostic-title h3 {
+            color: var(--primary-color);
+            font-size: 20px;
+            letter-spacing: -0.02em;
+        }
+
+        .diagnostic-title p {
+            margin-top: 4px;
+            color: var(--text-tertiary);
+            font-size: 13px;
+        }
+
+        .diagnostic-freshness {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .diagnostic-freshness::before {
+            content: '';
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--signal-muted);
+        }
+
+        .diagnostic-freshness.live::before {
+            background: var(--success-color);
+        }
+
+        .diagnostic-section {
+            margin-top: 16px;
+            padding: 16px;
+            background: var(--diagnostic-surface);
+            border: 1px solid var(--diagnostic-border);
+            border-radius: 10px;
+        }
+
+        .diagnostic-section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 14px;
+        }
+
+        .diagnostic-section-header h4 {
+            margin: 0;
+            color: var(--primary-color);
+            font-size: 15px;
+        }
+
+        .snapshot-groups {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .snapshot-group {
+            min-width: 0;
+            padding: 12px;
+            background: var(--diagnostic-inset);
+            border: 1px solid var(--diagnostic-border-soft);
+            border-radius: 8px;
+        }
+
+        .snapshot-group-title {
+            margin-bottom: 8px;
+            color: var(--text-tertiary);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .snapshot-list {
+            display: grid;
+            grid-template-columns: minmax(82px, auto) minmax(0, 1fr);
+            gap: 7px 10px;
+            margin: 0;
+            font-size: 12px;
+        }
+
+        .snapshot-list dt {
+            color: var(--text-tertiary);
+        }
+
+        .snapshot-list dd {
+            min-width: 0;
+            margin: 0;
+            color: var(--primary-color);
+            font-family: 'Consolas', 'SFMono-Regular', monospace;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: anywhere;
+        }
+
+        .diagnostic-state-strip {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .diagnostic-state-chip {
+            padding: 5px 8px;
+            color: var(--text-secondary);
+            background: var(--diagnostic-inset);
+            border: 1px solid var(--diagnostic-border-soft);
+            border-radius: 5px;
+            font-size: 11px;
+            font-family: 'Consolas', 'SFMono-Regular', monospace;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .timeline-summary {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            color: var(--text-secondary);
+            font-size: 12px;
+        }
+
+        .timeline-run-state {
+            padding: 4px 8px;
+            border-radius: 5px;
+            background: var(--diagnostic-inset);
+            color: var(--text-secondary);
+            font-weight: 700;
+        }
+
+        .timeline-run-state.running { color: var(--secondary-color); }
+        .timeline-run-state.success { color: var(--success-color); }
+        .timeline-run-state.skipped { color: var(--text-tertiary); }
+        .timeline-run-state.error { color: var(--danger-color); }
+
+        .timeline-timeout {
+            margin: 0 0 14px;
+            padding: 8px 10px;
+            color: #8a5600;
+            background: rgba(243, 156, 18, 0.1);
+            border-left: 3px solid var(--warning-color);
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .timeline-timeout.hidden {
+            display: none;
+        }
+
+        .filament-timeline {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 0;
+        }
+
+        .timeline-step {
+            position: relative;
+            min-width: 0;
+            text-align: center;
+        }
+
+        .timeline-step:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            top: 17px;
+            left: calc(50% + 17px);
+            right: calc(-50% + 17px);
+            height: 2px;
+            background: var(--signal-muted);
+            opacity: 0.45;
+            z-index: 0;
+        }
+
+        .timeline-node {
+            position: relative;
+            z-index: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 34px;
+            height: 34px;
+            border: 2px solid var(--signal-muted);
+            border-radius: 50%;
+            background: #fff;
+            color: var(--text-tertiary);
+            font: 700 12px/1 'Consolas', monospace;
+            transition: border-color 0.18s ease, color 0.18s ease, background-color 0.18s ease;
+        }
+
+        .timeline-step.success .timeline-node { border-color: var(--success-color); color: var(--success-color); }
+        .timeline-step.running .timeline-node { border-color: var(--secondary-color); color: #fff; background: var(--secondary-color); }
+        .timeline-step.warning .timeline-node { border-color: var(--warning-color); color: var(--warning-color); }
+        .timeline-step.error .timeline-node { border-color: var(--danger-color); color: #fff; background: var(--danger-color); }
+        .timeline-step.skipped .timeline-node,
+        .timeline-step.not_reached .timeline-node { border-style: dashed; color: var(--text-muted); }
+        .timeline-step.success:not(:last-child)::after { background: var(--success-color); opacity: 0.7; }
+        .timeline-step.warning:not(:last-child)::after { background: var(--warning-color); opacity: 0.7; }
+
+        .timeline-label {
+            display: block;
+            margin-top: 7px;
+            color: var(--primary-color);
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .timeline-meta {
+            display: block;
+            min-height: 30px;
+            margin: 3px 6px 0;
+            color: var(--text-tertiary);
+            font-size: 10px;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+
+        .log-panel.diagnostic-log-panel {
+            margin-top: 0;
+            background: transparent;
+            border: 0;
+            border-radius: 0;
+        }
+
+        .diagnostic-log-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .log-filter-cluster,
+        .log-action-cluster {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .log-filter-label {
+            color: var(--text-tertiary);
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .filter-chip,
+        .diagnostic-tool-btn {
+            min-height: 28px;
+            padding: 5px 9px;
+            border: 1px solid var(--diagnostic-border);
+            border-radius: 5px;
+            background: #fff;
+            color: var(--text-secondary);
+            font: 600 11px/1.2 inherit;
+            cursor: pointer;
+            transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+        }
+
+        .filter-chip:hover,
+        .diagnostic-tool-btn:hover {
+            border-color: rgba(52, 152, 219, 0.45);
+            color: var(--secondary-color);
+        }
+
+        .filter-chip.active,
+        .filter-chip[aria-pressed="true"] {
+            border-color: rgba(52, 152, 219, 0.35);
+            background: rgba(52, 152, 219, 0.09);
+            color: var(--secondary-color);
+        }
+
+        .diagnostic-tool-btn.danger:hover {
+            border-color: rgba(231, 76, 60, 0.4);
+            color: var(--danger-color);
+        }
+
+        .filter-chip:focus-visible,
+        .diagnostic-tool-btn:focus-visible {
+            outline: 3px solid rgba(52, 152, 219, 0.18);
+            outline-offset: 1px;
+        }
+
+        .diagnostic-log-summary {
+            margin-bottom: 8px;
+            color: var(--text-tertiary);
+            font-size: 11px;
+        }
+
+        .diagnostic-log-content {
+            height: 380px;
+            padding: 8px;
+            background: #fbfcfc;
+            border: 1px solid var(--diagnostic-border-soft);
+            border-radius: 7px;
+        }
+
+        .diagnostic-log-entry {
+            display: grid;
+            grid-template-columns: 86px 62px 74px minmax(100px, 0.7fr) minmax(180px, 2fr);
+            align-items: baseline;
+            gap: 8px;
+            margin: 0;
+            padding: 7px 8px;
+            border-radius: 4px;
+            color: var(--primary-color);
+            font-family: 'Consolas', 'SFMono-Regular', monospace;
+            font-size: 11px;
+        }
+
+        .diagnostic-log-entry:nth-child(even) {
+            background: rgba(44, 62, 80, 0.025);
+        }
+
+        .diagnostic-log-time,
+        .diagnostic-log-code {
+            color: var(--text-tertiary);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .diagnostic-log-badge {
+            display: inline-flex;
+            justify-content: center;
+            padding: 2px 5px;
+            border-radius: 3px;
+            background: var(--diagnostic-inset);
+            color: var(--text-secondary);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .diagnostic-log-entry.warning .diagnostic-log-level { color: var(--warning-color); }
+        .diagnostic-log-entry.error .diagnostic-log-level { color: var(--danger-color); }
+        .diagnostic-log-entry.info .diagnostic-log-level { color: var(--secondary-color); }
+        .diagnostic-log-entry.debug .diagnostic-log-level { color: var(--text-tertiary); }
+
+        .diagnostic-log-message {
+            overflow-wrap: anywhere;
+        }
+
+        .diagnostic-empty {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 110px;
+            color: var(--text-muted);
+            font-size: 12px;
+            text-align: center;
         }
 
         .hidden {
@@ -775,6 +1148,67 @@
                 overflow-x: auto;
                 padding: 0 16px;
             }
+
+            .diagnostic-header,
+            .diagnostic-section-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .snapshot-groups {
+                grid-template-columns: 1fr;
+            }
+
+            .filament-timeline {
+                display: flex;
+                flex-direction: column;
+                gap: 0;
+            }
+
+            .timeline-step {
+                min-height: 68px;
+                padding-left: 48px;
+                text-align: left;
+            }
+
+            .timeline-node {
+                position: absolute;
+                top: 0;
+                left: 0;
+            }
+
+            .timeline-step:not(:last-child)::after {
+                top: 34px;
+                bottom: 0;
+                left: 16px;
+                right: auto;
+                width: 2px;
+                height: auto;
+            }
+
+            .timeline-label {
+                margin-top: 0;
+                padding-top: 2px;
+            }
+
+            .timeline-meta {
+                min-height: 0;
+                margin: 4px 0 0;
+            }
+
+            .diagnostic-log-entry {
+                grid-template-columns: 74px 54px 64px minmax(0, 1fr);
+                gap: 5px;
+            }
+
+            .diagnostic-log-message {
+                grid-column: 1 / -1;
+                padding-top: 2px;
+            }
+
+            .diagnostic-log-content {
+                height: 330px;
+            }
         }
     </style>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -816,9 +1250,9 @@
         </div>
 
         <div class="tab-buttons">
-            <button class="tab-btn active" onclick="showTab('config-panel')"><i class="fas fa-wifi"></i> 网络配置</button>
-            <button class="tab-btn" onclick="showTab('main-panel')"><i class="fas fa-tachometer-alt"></i> 主控制台</button>
-            <button class="tab-btn" onclick="showTab('channel-panel')"><i class="fas fa-fill-drip"></i> 通道管理</button>
+            <button class="tab-btn active" onclick="showTab('config-panel', this)"><i class="fas fa-wifi"></i> 网络配置</button>
+            <button class="tab-btn" onclick="showTab('main-panel', this)"><i class="fas fa-stethoscope"></i> 系统诊断</button>
+            <button class="tab-btn" onclick="showTab('channel-panel', this)"><i class="fas fa-fill-drip"></i> 通道管理</button>
         </div>
 
         <!-- 网络配置面板 -->
@@ -855,18 +1289,130 @@
             </div>
         </div>
 
-        <!-- 主控制面板 -->
+        <!-- 系统诊断面板 -->
         <div id="main-panel" class="panel-content hidden">
-            <div class="log-panel">
-                <div class="log-header">
-                    <h4><i class="fas fa-terminal"></i> 系统运行日志</h4>
+            <div class="diagnostic-header">
+                <div class="diagnostic-title">
+                    <h3>系统诊断</h3>
+                    <p>设备资源、打印机链路与最近一次自动换料路径</p>
                 </div>
-                <div class="log-content" id="log-content">
-                    <!-- <div class="log-entry info">[INFO] 系统初始化完成，等待连接...</div>
-                    <div class="log-entry">[DEBUG] WebSocket 连接已建立</div>
-                    <div class="log-entry warning">[WARNING] MQTT 连接尚未配置</div> -->
-                </div>
+                <div class="diagnostic-freshness" id="diagnostic-freshness">等待设备快照</div>
             </div>
+
+            <section class="diagnostic-section" aria-labelledby="snapshot-title">
+                <div class="diagnostic-section-header">
+                    <h4 id="snapshot-title">设备快照</h4>
+                    <span class="diagnostic-freshness" id="snapshot-age">尚未更新</span>
+                </div>
+                <div class="snapshot-groups">
+                    <div class="snapshot-group">
+                        <div class="snapshot-group-title">设备</div>
+                        <dl class="snapshot-list">
+                            <dt>固件版本</dt><dd id="diag-firmware-version">--</dd>
+                            <dt>启动时长</dt><dd id="diag-uptime">--</dd>
+                            <dt>重启原因</dt><dd id="diag-reset-reason">--</dd>
+                            <dt>Web 客户端</dt><dd id="diag-ws-clients">--</dd>
+                            <dt>当前堆内存</dt><dd id="diag-heap-free">--</dd>
+                            <dt>最低堆内存</dt><dd id="diag-heap-min">--</dd>
+                        </dl>
+                    </div>
+                    <div class="snapshot-group">
+                        <div class="snapshot-group-title">网络</div>
+                        <dl class="snapshot-list">
+                            <dt>Wi-Fi</dt><dd id="diag-wifi-state">--</dd>
+                            <dt>SSID</dt><dd id="diag-wifi-ssid">--</dd>
+                            <dt>IP</dt><dd id="diag-wifi-ip">--</dd>
+                            <dt>RSSI</dt><dd id="diag-wifi-rssi">--</dd>
+                        </dl>
+                    </div>
+                    <div class="snapshot-group">
+                        <div class="snapshot-group-title">打印机链路</div>
+                        <dl class="snapshot-list">
+                            <dt>MQTT</dt><dd id="diag-mqtt-state">--</dd>
+                            <dt>最近收包</dt><dd id="diag-mqtt-last-rx">--</dd>
+                            <dt>重连次数</dt><dd id="diag-mqtt-reconnects">--</dd>
+                            <dt>最近错误</dt><dd id="diag-mqtt-error">无</dd>
+                        </dl>
+                    </div>
+                </div>
+                <div class="diagnostic-state-strip" aria-label="关键运行状态">
+                    <span class="diagnostic-state-chip" id="diag-operation">操作 --</span>
+                    <span class="diagnostic-state-chip" id="diag-lock">锁定 --</span>
+                    <span class="diagnostic-state-chip" id="diag-channel">通道 --</span>
+                    <span class="diagnostic-state-chip" id="diag-motor">电机 --</span>
+                    <span class="diagnostic-state-chip" id="diag-ams">AMS --</span>
+                    <span class="diagnostic-state-chip" id="diag-switch">微动 --</span>
+                    <span class="diagnostic-state-chip" id="diag-nozzle">目标温度 --</span>
+                </div>
+            </section>
+
+            <section class="diagnostic-section" aria-labelledby="timeline-title">
+                <div class="diagnostic-section-header">
+                    <h4 id="timeline-title">换料链路</h4>
+                    <div class="timeline-summary">
+                        <span class="timeline-run-state" id="timeline-run-state">尚无记录</span>
+                        <span id="timeline-route">通道 -- → --</span>
+                        <span id="timeline-elapsed">--</span>
+                    </div>
+                </div>
+                <p class="timeline-timeout hidden" id="timeline-timeout"></p>
+                <div class="filament-timeline" id="filament-timeline" aria-live="polite">
+                    <div class="timeline-step pending" data-stage="trigger">
+                        <span class="timeline-node">1</span><span class="timeline-label">触发</span><span class="timeline-meta">等待换料请求</span>
+                    </div>
+                    <div class="timeline-step pending" data-stage="unload">
+                        <span class="timeline-node">2</span><span class="timeline-label">退料</span><span class="timeline-meta">等待</span>
+                    </div>
+                    <div class="timeline-step pending" data-stage="retract">
+                        <span class="timeline-node">3</span><span class="timeline-label">退线</span><span class="timeline-meta">等待</span>
+                    </div>
+                    <div class="timeline-step pending" data-stage="heat">
+                        <span class="timeline-node">4</span><span class="timeline-label">加热</span><span class="timeline-meta">等待</span>
+                    </div>
+                    <div class="timeline-step pending" data-stage="feed">
+                        <span class="timeline-node">5</span><span class="timeline-label">进线</span><span class="timeline-meta">等待</span>
+                    </div>
+                    <div class="timeline-step pending" data-stage="resume">
+                        <span class="timeline-node">6</span><span class="timeline-label">恢复</span><span class="timeline-meta">等待</span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="diagnostic-section" aria-labelledby="log-title">
+                <div class="diagnostic-section-header">
+                    <h4 id="log-title">结构化事件</h4>
+                </div>
+                <div class="diagnostic-log-toolbar">
+                    <div class="log-filter-cluster" aria-label="日志筛选">
+                        <span class="log-filter-label">级别</span>
+                        <button class="filter-chip active" aria-pressed="true" data-filter-kind="level" data-filter-value="all" onclick="setLogFilter('level', 'all', this)">全部</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="level" data-filter-value="debug" onclick="setLogFilter('level', 'debug', this)">调试</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="level" data-filter-value="info" onclick="setLogFilter('level', 'info', this)">信息</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="level" data-filter-value="warning" onclick="setLogFilter('level', 'warning', this)">警告</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="level" data-filter-value="error" onclick="setLogFilter('level', 'error', this)">错误</button>
+                        <span class="log-filter-label">模块</span>
+                        <button class="filter-chip active" aria-pressed="true" data-filter-kind="module" data-filter-value="all" onclick="setLogFilter('module', 'all', this)">全部</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="module" data-filter-value="system" onclick="setLogFilter('module', 'system', this)">系统</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="module" data-filter-value="wifi" onclick="setLogFilter('module', 'wifi', this)">Wi-Fi</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="module" data-filter-value="mqtt" onclick="setLogFilter('module', 'mqtt', this)">MQTT</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="module" data-filter-value="web" onclick="setLogFilter('module', 'web', this)">Web</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="module" data-filter-value="motor" onclick="setLogFilter('module', 'motor', this)">电机</button>
+                        <button class="filter-chip" aria-pressed="false" data-filter-kind="module" data-filter-value="filament" onclick="setLogFilter('module', 'filament', this)">换料</button>
+                    </div>
+                    <div class="log-action-cluster">
+                        <button class="diagnostic-tool-btn" id="log-pause-button" onclick="toggleLogAutoScroll()">暂停滚动</button>
+                        <button class="diagnostic-tool-btn" onclick="copyVisibleLogs()">复制可见</button>
+                        <button class="diagnostic-tool-btn" onclick="downloadDiagnosticLogs()">下载日志</button>
+                        <button class="diagnostic-tool-btn danger" onclick="clearDiagnosticLogs()">清空</button>
+                    </div>
+                </div>
+                <div class="diagnostic-log-summary" id="diagnostic-log-summary">0 条事件</div>
+                <div class="log-panel diagnostic-log-panel">
+                    <div class="log-content diagnostic-log-content" id="log-content" aria-live="polite">
+                        <div class="diagnostic-empty">等待设备事件…</div>
+                    </div>
+                </div>
+            </section>
         </div>
 
         <!-- 通道管理面板 -->
@@ -1099,6 +1645,454 @@
             ip: '',
             rssi: null
         };
+        const diagnosticLogs = new Map();
+        const clientDiagnosticLogs = new Map();
+        const timelineStageLabels = {
+            trigger: '触发',
+            unload: '退料',
+            retract: '退线',
+            heat: '加热',
+            feed: '进线',
+            resume: '恢复'
+        };
+        const timelineStateLabels = {
+            pending: '等待',
+            running: '进行中',
+            success: '完成',
+            skipped: '跳过',
+            warning: '警告',
+            error: '失败',
+            not_reached: '未到达'
+        };
+        const timelineRunLabels = {
+            idle: '尚无记录',
+            running: '换料进行中',
+            success: '换料完成',
+            skipped: '无需换料',
+            error: '换料失败'
+        };
+        const diagnosticModuleLabels = {
+            system: '系统',
+            wifi: 'Wi-Fi',
+            mqtt: 'MQTT',
+            web: 'Web',
+            motor: '电机',
+            filament: '换料'
+        };
+        const diagnosticLevelLabels = {
+            debug: '调试',
+            info: '信息',
+            warning: '警告',
+            error: '错误'
+        };
+        let latestDiagnosticSnapshot = null;
+        let latestTimeline = null;
+        let diagnosticSnapshotReceivedAt = 0;
+        let diagnosticRefreshTimer = null;
+        let diagnosticClockTimer = null;
+        let diagnosticLogLevel = 'all';
+        let diagnosticLogModule = 'all';
+        let diagnosticLogOverwritten = 0;
+        let diagnosticLogClearedThrough = 0;
+        let logAutoScroll = true;
+        let localLogSequence = 0;
+
+        function setDiagnosticText(id, value) {
+            const element = document.getElementById(id);
+            if (element) element.textContent = value;
+        }
+
+        function formatDuration(milliseconds, includeMilliseconds = false) {
+            if (!Number.isFinite(milliseconds) || milliseconds < 0) return '--';
+            const value = Math.max(0, Math.floor(milliseconds));
+            const days = Math.floor(value / 86400000);
+            const hours = Math.floor((value % 86400000) / 3600000);
+            const minutes = Math.floor((value % 3600000) / 60000);
+            const seconds = Math.floor((value % 60000) / 1000);
+            const millis = value % 1000;
+            if (days > 0) return `${days}天 ${hours}时 ${minutes}分`;
+            if (hours > 0) return `${hours}时 ${minutes}分 ${seconds}秒`;
+            if (minutes > 0) return `${minutes}分 ${seconds}秒`;
+            if (includeMilliseconds && value < 10000) return `${seconds}.${millis.toString().padStart(3, '0')}秒`;
+            return `${seconds}秒`;
+        }
+
+        function formatLogUptime(milliseconds) {
+            if (!Number.isFinite(milliseconds) || milliseconds < 0) return '--:--:--';
+            const totalSeconds = Math.floor(milliseconds / 1000);
+            const hours = Math.floor(totalSeconds / 3600).toString().padStart(2, '0');
+            const minutes = Math.floor((totalSeconds % 3600) / 60).toString().padStart(2, '0');
+            const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+            return `${hours}:${minutes}:${seconds}`;
+        }
+
+        function formatBytes(bytes) {
+            if (!Number.isFinite(bytes)) return '--';
+            if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+            return `${(bytes / 1024).toFixed(1)} KiB`;
+        }
+
+        function estimatedDeviceUptime() {
+            if (!latestDiagnosticSnapshot || !diagnosticSnapshotReceivedAt) return 0;
+            return latestDiagnosticSnapshot.uptime_ms + (performance.now() - diagnosticSnapshotReceivedAt);
+        }
+
+        function mqttStateLabel(mqtt) {
+            const labels = {
+                not_configured: '未配置',
+                connecting: '连接中',
+                connected: '已连接',
+                disconnected: '已断开',
+                error: '连接错误'
+            };
+            const base = labels[mqtt?.transport_state] || mqtt?.transport_state || '--';
+            return mqtt?.stale ? `${base} · 数据超时` : base;
+        }
+
+        function renderDiagnosticSnapshot(snapshot) {
+            if (!snapshot) return;
+            if (latestDiagnosticSnapshot &&
+                Number(snapshot.uptime_ms) < Number(latestDiagnosticSnapshot.uptime_ms)) {
+                diagnosticLogs.clear();
+                diagnosticLogClearedThrough = 0;
+                diagnosticLogOverwritten = 0;
+                renderDiagnosticLogs();
+            }
+            latestDiagnosticSnapshot = snapshot;
+            diagnosticSnapshotReceivedAt = performance.now();
+
+            setDiagnosticText('diag-firmware-version', snapshot.firmware_version || '--');
+            setDiagnosticText('diag-reset-reason', snapshot.reset_reason?.label || '--');
+            setDiagnosticText('diag-ws-clients', Number.isFinite(snapshot.websocket_clients) ? snapshot.websocket_clients : '--');
+            setDiagnosticText('diag-heap-free', formatBytes(snapshot.heap?.free_bytes));
+            setDiagnosticText('diag-heap-min', formatBytes(snapshot.heap?.minimum_free_bytes));
+            setDiagnosticText('diag-wifi-state', snapshot.wifi?.connected ? '已连接' : '未连接');
+            setDiagnosticText('diag-wifi-ssid', snapshot.wifi?.ssid || '--');
+            setDiagnosticText('diag-wifi-ip', snapshot.wifi?.ip || '--');
+            setDiagnosticText('diag-wifi-rssi', Number.isFinite(snapshot.wifi?.rssi_dbm) ? `${snapshot.wifi.rssi_dbm} dBm` : '--');
+            setDiagnosticText('diag-mqtt-state', mqttStateLabel(snapshot.mqtt));
+            setDiagnosticText('diag-mqtt-reconnects', Number.isFinite(snapshot.mqtt?.reconnect_count) ? snapshot.mqtt.reconnect_count : '--');
+            const mqttError = snapshot.mqtt?.last_error;
+            if (mqttError) {
+                const codes = [mqttError.code, mqttError.detail_code, mqttError.socket_errno]
+                    .filter(value => Number.isFinite(value) && value !== 0)
+                    .join('/');
+                const occurredAt = Number.isFinite(mqttError.at_ms) ? formatLogUptime(mqttError.at_ms) : '--:--:--';
+                setDiagnosticText('diag-mqtt-error', `${mqttError.message} · ${mqttError.kind}${codes ? ` ${codes}` : ''} · ${occurredAt}`);
+            } else {
+                setDiagnosticText('diag-mqtt-error', '无');
+            }
+
+            const system = snapshot.system || {};
+            const operationLabels = { idle: '空闲', changing: '换料中', loading: '上料中' };
+            setDiagnosticText('diag-operation', `操作 ${operationLabels[system.operation_status] || system.operation_status || '--'}`);
+            setDiagnosticText('diag-lock', `锁定 ${system.locked ? '是' : '否'}`);
+            setDiagnosticText('diag-channel', `通道 ${system.current_channel > 0 ? system.current_channel : '无'}`);
+            setDiagnosticText('diag-motor', `电机 ${system.motor_running > 0 ? system.motor_running : '无'}`);
+            setDiagnosticText('diag-ams', `AMS ${Number.isFinite(system.ams_status) ? system.ams_status : '--'}`);
+            setDiagnosticText('diag-switch', `微动 ${system.hw_switch === 1 ? '有料' : system.hw_switch === 0 ? '无料' : '--'}`);
+            setDiagnosticText('diag-nozzle', `目标温度 ${Number.isFinite(system.nozzle_target_c) && system.nozzle_target_c >= 0 ? `${system.nozzle_target_c}°C` : '--'}`);
+
+            const freshness = document.getElementById('diagnostic-freshness');
+            if (freshness) {
+                freshness.textContent = '设备数据实时';
+                freshness.classList.add('live');
+            }
+            updateDiagnosticClocks();
+        }
+
+        function updateDiagnosticClocks() {
+            if (!latestDiagnosticSnapshot) return;
+            const elapsedSinceSnapshot = performance.now() - diagnosticSnapshotReceivedAt;
+            const nowUptime = latestDiagnosticSnapshot.uptime_ms + elapsedSinceSnapshot;
+            setDiagnosticText('diag-uptime', formatDuration(nowUptime));
+            setDiagnosticText('snapshot-age', `${formatDuration(elapsedSinceSnapshot)}前更新`);
+            if (latestDiagnosticSnapshot.mqtt?.last_receive_age_ms == null) {
+                setDiagnosticText('diag-mqtt-last-rx', '从未收到');
+            } else {
+                setDiagnosticText('diag-mqtt-last-rx', `${formatDuration(latestDiagnosticSnapshot.mqtt.last_receive_age_ms + elapsedSinceSnapshot)}前`);
+            }
+            renderFilamentTimeline();
+        }
+
+        function renderFilamentTimeline() {
+            const timeline = latestTimeline;
+            const runState = document.getElementById('timeline-run-state');
+            if (!timeline || !timeline.run_id) {
+                if (runState) {
+                    runState.textContent = '尚无记录';
+                    runState.className = 'timeline-run-state';
+                }
+                setDiagnosticText('timeline-route', '通道 -- → --');
+                setDiagnosticText('timeline-elapsed', '--');
+                document.querySelectorAll('.timeline-step').forEach(stepElement => {
+                    stepElement.className = 'timeline-step pending';
+                    const meta = stepElement.querySelector('.timeline-meta');
+                    if (meta) meta.textContent = stepElement.dataset.stage === 'trigger' ? '等待换料请求' : '等待';
+                });
+                const timeoutElement = document.getElementById('timeline-timeout');
+                if (timeoutElement) {
+                    timeoutElement.textContent = '';
+                    timeoutElement.classList.add('hidden');
+                }
+                return;
+            }
+
+            if (runState) {
+                runState.textContent = timelineRunLabels[timeline.state] || timeline.state;
+                runState.className = `timeline-run-state ${timeline.state || ''}`;
+            }
+            const from = timeline.from_channel > 0 ? timeline.from_channel : '无';
+            const to = timeline.to_channel > 0 ? timeline.to_channel : '--';
+            setDiagnosticText('timeline-route', `通道 ${from} → ${to}`);
+            const timelineEnd = Number.isFinite(timeline.finished_ms) ? timeline.finished_ms : estimatedDeviceUptime();
+            setDiagnosticText('timeline-elapsed', `总耗时 ${formatDuration(timelineEnd - timeline.started_ms, true)}`);
+
+            const stagesById = new Map((timeline.stages || []).map(stage => [stage.id, stage]));
+            document.querySelectorAll('.timeline-step').forEach(stepElement => {
+                const stage = stagesById.get(stepElement.dataset.stage);
+                const state = stage?.state || 'pending';
+                stepElement.className = `timeline-step ${state}`;
+                const meta = stepElement.querySelector('.timeline-meta');
+                if (!meta) return;
+                let duration = '';
+                if (Number.isFinite(stage?.started_ms)) {
+                    const end = Number.isFinite(stage.finished_ms) ? stage.finished_ms : estimatedDeviceUptime();
+                    duration = formatDuration(end - stage.started_ms, true);
+                }
+                const stateText = timelineStateLabels[state] || state;
+                meta.textContent = [stateText, duration, stage?.detail].filter(Boolean).join(' · ');
+            });
+
+            const timeoutElement = document.getElementById('timeline-timeout');
+            if (timeoutElement) {
+                if (timeline.last_timeout) {
+                    const stageLabel = timelineStageLabels[timeline.last_timeout.stage] || timeline.last_timeout.stage;
+                    timeoutElement.textContent = `本次启动最近超时：${stageLabel} · ${timeline.last_timeout.detail} · ${formatLogUptime(timeline.last_timeout.at_ms)}`;
+                    timeoutElement.classList.remove('hidden');
+                } else {
+                    timeoutElement.textContent = '';
+                    timeoutElement.classList.add('hidden');
+                }
+            }
+        }
+
+        function normalizeDiagnosticEvent(item, local = false) {
+            return {
+                seq: item.seq,
+                uptime_ms: Number(item.uptime_ms) || 0,
+                level: diagnosticLevelLabels[item.level] ? item.level : 'info',
+                module: diagnosticModuleLabels[item.module] ? item.module : 'system',
+                code: String(item.code || 'EVENT'),
+                message: String(item.message || ''),
+                local
+            };
+        }
+
+        function storeDiagnosticEvent(item, local = false) {
+            const value = normalizeDiagnosticEvent(item, local);
+            if (!local && Number.isFinite(Number(value.seq)) &&
+                Number(value.seq) <= diagnosticLogClearedThrough) return;
+            const target = local ? clientDiagnosticLogs : diagnosticLogs;
+            const key = String(value.seq);
+            target.set(key, value);
+            const capacity = local ? 16 : 64;
+            while (target.size > capacity) {
+                target.delete(target.keys().next().value);
+            }
+        }
+
+        function sortedDiagnosticLogs(includeLocal = true) {
+            const logs = includeLocal
+                ? [...diagnosticLogs.values(), ...clientDiagnosticLogs.values()]
+                : [...diagnosticLogs.values()];
+            return logs.sort((left, right) => {
+                if (left.uptime_ms !== right.uptime_ms) return left.uptime_ms - right.uptime_ms;
+                return String(left.seq).localeCompare(String(right.seq));
+            });
+        }
+
+        function visibleDiagnosticLogs() {
+            return sortedDiagnosticLogs().filter(item =>
+                (diagnosticLogLevel === 'all' || item.level === diagnosticLogLevel) &&
+                (diagnosticLogModule === 'all' || item.module === diagnosticLogModule)
+            );
+        }
+
+        function renderDiagnosticLogs() {
+            const logElement = document.getElementById('log-content');
+            if (!logElement) return;
+            const allLogs = sortedDiagnosticLogs();
+            const visibleLogs = visibleDiagnosticLogs();
+            const fragment = document.createDocumentFragment();
+
+            if (visibleLogs.length === 0) {
+                const empty = document.createElement('div');
+                empty.className = 'diagnostic-empty';
+                empty.textContent = allLogs.length ? '当前筛选条件下没有事件' : '等待设备事件…';
+                fragment.appendChild(empty);
+            } else {
+                visibleLogs.forEach(item => {
+                    const row = document.createElement('div');
+                    row.className = `diagnostic-log-entry ${item.level}`;
+
+                    const time = document.createElement('span');
+                    time.className = 'diagnostic-log-time';
+                    time.textContent = formatLogUptime(item.uptime_ms);
+
+                    const levelBadge = document.createElement('span');
+                    levelBadge.className = 'diagnostic-log-badge diagnostic-log-level';
+                    levelBadge.textContent = diagnosticLevelLabels[item.level] || item.level;
+
+                    const moduleBadge = document.createElement('span');
+                    moduleBadge.className = 'diagnostic-log-badge';
+                    moduleBadge.textContent = diagnosticModuleLabels[item.module] || item.module;
+
+                    const code = document.createElement('span');
+                    code.className = 'diagnostic-log-code';
+                    code.textContent = item.code;
+
+                    const message = document.createElement('span');
+                    message.className = 'diagnostic-log-message';
+                    message.textContent = item.message;
+
+                    row.append(time, levelBadge, moduleBadge, code, message);
+                    fragment.appendChild(row);
+                });
+            }
+
+            logElement.replaceChildren(fragment);
+            const overwritten = diagnosticLogOverwritten > 0 ? `，设备已覆盖 ${diagnosticLogOverwritten} 条旧事件` : '';
+            setDiagnosticText('diagnostic-log-summary', `${visibleLogs.length}/${allLogs.length} 条事件${overwritten}`);
+            if (logAutoScroll) logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        function setLogFilter(kind, value, button) {
+            if (kind === 'level') diagnosticLogLevel = value;
+            if (kind === 'module') diagnosticLogModule = value;
+            document.querySelectorAll(`[data-filter-kind="${kind}"]`).forEach(item => {
+                const active = item === button;
+                item.classList.toggle('active', active);
+                item.setAttribute('aria-pressed', active ? 'true' : 'false');
+            });
+            renderDiagnosticLogs();
+        }
+
+        function toggleLogAutoScroll() {
+            logAutoScroll = !logAutoScroll;
+            const button = document.getElementById('log-pause-button');
+            if (button) button.textContent = logAutoScroll ? '暂停滚动' : '继续并跳至最新';
+            if (logAutoScroll) {
+                const logElement = document.getElementById('log-content');
+                if (logElement) logElement.scrollTop = logElement.scrollHeight;
+            }
+        }
+
+        function formatDiagnosticLogLine(item) {
+            return `[${formatLogUptime(item.uptime_ms)}] [${item.level.toUpperCase()}] [${item.module}] [${item.code}] ${item.message}`;
+        }
+
+        async function copyVisibleLogs() {
+            const text = visibleDiagnosticLogs().map(formatDiagnosticLogLine).join('\n');
+            if (!text) return;
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch (_) {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                textarea.remove();
+            }
+        }
+
+        function downloadDiagnosticLogs() {
+            const text = sortedDiagnosticLogs(false).map(formatDiagnosticLogLine).join('\n');
+            if (!text) return;
+            const blob = new Blob(['\uFEFF', text, '\n'], { type: 'text/plain;charset=utf-8' });
+            const link = document.createElement('a');
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            link.href = URL.createObjectURL(blob);
+            link.download = `top-ams-log-${timestamp}.txt`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(link.href);
+        }
+
+        function clearDiagnosticLogs() {
+            if (!window.confirm('清空设备本次启动期间的全部结构化日志？此操作会同步到其他已连接页面。')) return;
+            if (ws.readyState !== WebSocket.OPEN) {
+                addLog('WebSocket 未连接，无法清空设备日志', 'warning');
+                return;
+            }
+            ws.send(JSON.stringify({ action: { command: 'clear_diagnostic_logs' } }));
+        }
+
+        function requestDiagnosticsSnapshot() {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: { command: 'get_diagnostics_snapshot' } }));
+            }
+        }
+
+        function startDiagnosticRefresh() {
+            stopDiagnosticRefresh();
+            requestDiagnosticsSnapshot();
+            diagnosticRefreshTimer = window.setInterval(requestDiagnosticsSnapshot, 5000);
+            diagnosticClockTimer = window.setInterval(updateDiagnosticClocks, 1000);
+        }
+
+        function stopDiagnosticRefresh() {
+            if (diagnosticRefreshTimer !== null) window.clearInterval(diagnosticRefreshTimer);
+            if (diagnosticClockTimer !== null) window.clearInterval(diagnosticClockTimer);
+            diagnosticRefreshTimer = null;
+            diagnosticClockTimer = null;
+        }
+
+        function handleDiagnosticMessage(doc) {
+            if (!doc?.type) return false;
+            if (doc.type === 'diagnostics_snapshot') {
+                renderDiagnosticSnapshot(doc.payload);
+                return true;
+            }
+            if (doc.type === 'filament_timeline') {
+                latestTimeline = doc.payload;
+                renderFilamentTimeline();
+                return true;
+            }
+            if (doc.type === 'diagnostics_log_batch') {
+                if (doc.payload?.reset) diagnosticLogs.clear();
+                diagnosticLogOverwritten = Number(doc.payload?.overwritten_count) || 0;
+                (doc.payload?.events || []).forEach(item => storeDiagnosticEvent(item));
+                renderDiagnosticLogs();
+                return true;
+            }
+            if (doc.type === 'diagnostics_event') {
+                diagnosticLogOverwritten = Number(doc.payload?.overwritten_count) || diagnosticLogOverwritten;
+                storeDiagnosticEvent(doc.payload);
+                renderDiagnosticLogs();
+                return true;
+            }
+            if (doc.type === 'diagnostics_log_reset') {
+                const clearedThrough = Number(doc.payload?.cleared_through_seq);
+                if (Number.isFinite(clearedThrough)) {
+                    diagnosticLogClearedThrough = Math.max(diagnosticLogClearedThrough, clearedThrough);
+                    for (const [key, item] of diagnosticLogs) {
+                        if (Number(item.seq) <= clearedThrough) diagnosticLogs.delete(key);
+                    }
+                } else {
+                    diagnosticLogs.clear();
+                }
+                clientDiagnosticLogs.clear();
+                diagnosticLogOverwritten = 0;
+                renderDiagnosticLogs();
+                return true;
+            }
+            return false;
+        }
 
         function getWifiSignal(rssi) {
             if (!Number.isFinite(rssi)) return { level: 0, label: '不可用', stateClass: 'signal-disconnected' };
@@ -1182,15 +2176,23 @@
             wifiState.connected = null;
             renderWifiStatus('正在读取网络…');
             startWifiRefresh();
-            addLog('WebSocket连接已建立', 'success');
+            if (!document.getElementById('main-panel').classList.contains('hidden')) {
+                startDiagnosticRefresh();
+            }
         };
 
         ws.onclose = function () {
             espDot.classList.add('disconnected');
             espDot.classList.remove('connected');
             stopWifiRefresh();
+            stopDiagnosticRefresh();
             markWifiUnavailable('ESP32 连接已断开');
-            addLog('WebSocket连接已关闭', 'warning');
+            const freshness = document.getElementById('diagnostic-freshness');
+            if (freshness) {
+                freshness.textContent = '设备连接已断开';
+                freshness.classList.remove('live');
+            }
+            addLog('WebSocket 连接已关闭', 'warning');
         };
 
         // 状态变量
@@ -1248,7 +2250,14 @@
         }
 
         ws.onmessage = function (event) {
-            const doc = JSON.parse(event.data);
+            let doc;
+            try {
+                doc = JSON.parse(event.data);
+            } catch (_) {
+                addLog('收到无法解析的 WebSocket 消息', 'error');
+                return;
+            }
+            if (handleDiagnosticMessage(doc)) return;
             let wifiStateChanged = false;
             if (doc.data) {
                 doc.data.forEach(item => {
@@ -1374,13 +2383,21 @@
             addLog('WebSocket错误: ' + error.message, 'error');
         };
 
-        function showTab(tabId) {
+        function showTab(tabId, sourceButton = null) {
             document.querySelectorAll('.tab-btn').forEach(btn => { btn.classList.remove('active') });
-            event.target.classList.add('active');
+            const selectedButton = sourceButton || Array.from(document.querySelectorAll('.tab-btn')).find(btn =>
+                (btn.getAttribute('onclick') || '').includes(`'${tabId}'`)
+            );
+            if (selectedButton) selectedButton.classList.add('active');
             document.getElementById('main-panel').classList.add('hidden');
             document.getElementById('config-panel').classList.add('hidden');
             document.getElementById('channel-panel').classList.add('hidden');
             document.getElementById(tabId).classList.remove('hidden');
+            if (tabId === 'main-panel') {
+                startDiagnosticRefresh();
+            } else {
+                stopDiagnosticRefresh();
+            }
         }
 
         // 发送MQTT参数
@@ -1500,12 +2517,16 @@
         }
 
         function addLog(message, type = 'info') {
-            const logElement = document.getElementById('log-content');
-            const logEntry = document.createElement('div');
-            logEntry.className = `log-entry ${type}`;
-            logEntry.textContent = `[${getTimestamp()}] ${message}`;
-            logElement.appendChild(logEntry);
-            logElement.scrollTop = logElement.scrollHeight;
+            const level = type === 'warning' || type === 'error' || type === 'debug' ? type : 'info';
+            storeDiagnosticEvent({
+                seq: ++localLogSequence,
+                uptime_ms: estimatedDeviceUptime(),
+                level,
+                module: 'web',
+                code: 'WEB_CLIENT',
+                message
+            }, true);
+            renderDiagnosticLogs();
         }
 
         function getTimestamp() {

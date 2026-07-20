@@ -1,5 +1,6 @@
 #pragma once
 #include "config.hpp"
+#include "diagnostics.hpp"
 #include "tools.hpp"
 
 #include "espIO.hpp"
@@ -12,9 +13,7 @@ namespace mesp {
     using std::string;
 
     using callback_fun_ptr = void (*)(esp_mqtt_client_handle_t, const string&);
-
-    inline std::atomic<int> time_out = 0;//@_@超时处理,之后优化一下
-
+    using state_callback_fun_ptr = void (*)(int);
 
     struct Mqttclient {
       private:
@@ -29,81 +28,86 @@ namespace mesp {
 
             switch (esp_mqtt_event_id_t(event_id)) {
             case MQTT_EVENT_CONNECTED:
-                if (This.state == mqtt_state::disconnected || This.state == mqtt_state::error) {
-                    fpr("MQTT_EVENT_CONNECTED（MQTT重连成功）");
-                } else {
-                    fpr("MQTT_EVENT_CONNECTED（MQTT连接成功）");
-                }
-                fpr("MQTT会话已建立");
-                This.state = mqtt_state::connected;
-                This.state.notify_all();
+                diagnostics::mqtt_metrics.mark_connected();
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                                   "MQTT_CONNECTED", "MQTT 会话已建立");
+                This.set_state(mqtt_state::connected);
                 break;
             case MQTT_EVENT_DISCONNECTED:
-                fpr("MQTT_EVENT_DISCONNECTED（MQTT断开连接）");
-                if (event->error_handle) {
-                    fpr("断开原因 - 错误类型: ", event->error_handle->error_type);
-                    if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
-                        fpr("TCP传输错误，将自动重连");
-                    } else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
-                        fpr("连接被拒绝，返回码: ", event->error_handle->connect_return_code);
-                    }
-                } else {
-                    fpr("正常断开或网络异常，将自动重连");
-                }
-                This.state = mqtt_state::disconnected;
-                This.state.notify_all();
+                diagnostics::mqtt_metrics.mark_disconnected();
+                diagnostics::write(diagnostics::level::warning, diagnostics::log_module::mqtt,
+                                   "MQTT_DISCONNECTED", "MQTT 已断开，将自动尝试重连");
+                This.set_state(mqtt_state::disconnected);
                 break;
             case MQTT_EVENT_BEFORE_CONNECT:
-                fpr("MQTT_EVENT_BEFORE_CONNECT（MQTT连接前，正在尝试连接...）");
+                diagnostics::mqtt_metrics.mark_connecting();
+                diagnostics::write(diagnostics::level::debug, diagnostics::log_module::mqtt,
+                                   "MQTT_CONNECTING", "MQTT 正在尝试连接");
+                // Keep the internal state at init until a terminal connection
+                // event wakes wait(); only the diagnostic/UI state is changing.
+                if (This.state_event_fun != nullptr)
+                    This.state_event_fun(mqtt_state::connecting);
                 break;
             case MQTT_EVENT_SUBSCRIBED:
-                fpr("MQTT_EVENT_SUBSCRIBED（MQTT订阅成功），msg_id=", event->msg_id);
-                if (event->topic_len > 0) {
-                    fpr("订阅主题: ", string(event->topic, event->topic_len));
-                }
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                                   "MQTT_SUBSCRIBED",
+                                   "MQTT 订阅成功，消息 ID " + std::to_string(event->msg_id));
                 break;
             case MQTT_EVENT_UNSUBSCRIBED:
-                fpr("MQTT_EVENT_UNSUBSCRIBED（MQTT取消订阅成功），msg_id=", event->msg_id);
+                diagnostics::write(diagnostics::level::debug, diagnostics::log_module::mqtt,
+                                   "MQTT_UNSUBSCRIBED", "MQTT 已取消订阅");
                 break;
             case MQTT_EVENT_PUBLISHED:
-                fpr("MQTT_EVENT_PUBLISHED（MQTT消息发布成功），msg_id=", event->msg_id);
+                diagnostics::write(diagnostics::level::debug, diagnostics::log_module::mqtt,
+                                   "MQTT_PUBLISHED",
+                                   "MQTT 消息已发布，消息 ID " + std::to_string(event->msg_id));
                 break;
             case MQTT_EVENT_DATA:
-                // fpr("MQTT_EVENT_DATA（接收到MQTT消息）");
-                if (event->topic_len > 0) {
-                    fpr("收到消息，主题: ", string(event->topic, event->topic_len), ", 数据长度: ", event->data_len);
+                fpr("收到 MQTT 数据，长度: ", event->data_len);
+                if (diagnostics::mqtt_metrics.mark_received()) {
+                    diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                                       "MQTT_DATA_RECOVERED", "MQTT 数据流已恢复");
                 }
-                fpr(string(event->data, event->data_len));
-                time_out = 0;               
                 f(client, string(event->data, event->data_len));
                 break;
             case MQTT_EVENT_ERROR:
-                fpr("MQTT_EVENT_ERROR（MQTT事件错误）");
                 if (event->error_handle) {
                     if (event->error_handle->error_type == MQTT_ERROR_TYPE_TCP_TRANSPORT) {
-                        fpr("TCP传输错误 - esp-tls错误代码：", event->error_handle->esp_tls_last_esp_err);
-                        fpr("TLS堆栈错误号：", event->error_handle->esp_tls_stack_err);
-                        fpr("Socket错误：", event->error_handle->esp_transport_sock_errno,
-                            " (", strerror(event->error_handle->esp_transport_sock_errno), ")");
-                        fpr("将自动尝试重连");
+                        diagnostics::mqtt_metrics.mark_error(
+                            "tcp_transport", event->error_handle->esp_tls_last_esp_err,
+                            event->error_handle->esp_tls_stack_err,
+                            event->error_handle->esp_transport_sock_errno,
+                            "MQTT TCP/TLS 传输错误");
+                        diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                                           "MQTT_TCP_ERROR", "MQTT TCP/TLS 传输错误");
                     } else if (event->error_handle->error_type == MQTT_ERROR_TYPE_CONNECTION_REFUSED) {
-                        fpr("连接被拒绝，返回码：", event->error_handle->connect_return_code);
-                        fpr("可能原因：用户名/密码错误、服务器拒绝连接等");
+                        diagnostics::mqtt_metrics.mark_error(
+                            "connection_refused", event->error_handle->connect_return_code,
+                            0, 0, "MQTT 连接被打印机拒绝");
+                        diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                                           "MQTT_REFUSED", "MQTT 连接被打印机拒绝");
                     } else {
-                        fpr("未知的错误类型：", event->error_handle->error_type);
+                        diagnostics::mqtt_metrics.mark_error(
+                            "unknown", event->error_handle->error_type, 0, 0,
+                            "未知 MQTT 错误");
+                        diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                                           "MQTT_ERROR", "发生未知 MQTT 错误");
                     }
+                } else {
+                    diagnostics::mqtt_metrics.mark_error("unknown", 0, 0, 0, "MQTT 事件错误");
+                    diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                                       "MQTT_ERROR", "MQTT 事件错误");
                 }
-                This.state = mqtt_state::error;
-                This.state.notify_all();
+                This.set_state(mqtt_state::error);
                 break;
             default:
-                fpr("其他MQTT事件id:", event->event_id);
                 break;
             }
         }// mqtt_event_callback
       public:
         esp_mqtt_client_handle_t client = nullptr;
         const callback_fun_ptr event_data_fun;
+        const state_callback_fun_ptr state_event_fun;
 
         struct mqtt_state {
             constexpr static int init = 0;
@@ -111,13 +115,19 @@ namespace mesp {
             constexpr static int connected = 2;
             constexpr static int disconnected = 3;
             constexpr static int error = 4;
+            constexpr static int connecting = 5;
         };// mqtt_state
 
         std::atomic<int> state = mqtt_state::init;
 
-  Mqttclient(const string& server, const string& user, const string& pass, callback_fun_ptr f)
-    : event_data_fun(f) 
+  Mqttclient(const string& server, const string& user, const string& pass, callback_fun_ptr f,
+             state_callback_fun_ptr state_callback = nullptr)
+    : event_data_fun(f), state_event_fun(state_callback)
 {
+    diagnostics::mqtt_metrics.mark_connecting();
+    if (state_event_fun != nullptr)
+        state_event_fun(mqtt_state::init);
+
     esp_mqtt_client_config_t mqtt_cfg{};
     mqtt_cfg.broker.address.uri = server.c_str();
     mqtt_cfg.broker.verification.skip_cert_common_name_check = true;
@@ -142,9 +152,8 @@ namespace mesp {
     mqtt_cfg.task.stack_size = 6144;              // 增大任务栈
     mqtt_cfg.task.priority = 5;                   // 提高任务优先级
 
-    fpr("初始化MQTT客户端，服务器: ", server);
-    fpr("Keep-Alive心跳间隔: ", mqtt_cfg.session.keepalive, "秒");
-    fpr("自动重连: 启用，重连超时: ", mqtt_cfg.network.reconnect_timeout_ms, "毫秒");
+    diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                       "MQTT_INIT", "初始化 MQTT 客户端，服务器 " + server);
 
     client = esp_mqtt_client_init(&mqtt_cfg);
     error_check(esp_mqtt_client_register_event(client, MQTT_EVENT_ANY, Mqttclient::mqtt_event_callback, this), "Mqtt注册事件失败");
@@ -159,7 +168,7 @@ namespace mesp {
         Mqttclient(const Mqttclient&) = delete;
         Mqttclient& operator=(const Mqttclient&) = delete;
         Mqttclient(Mqttclient&& r) noexcept
-            : event_data_fun(r.event_data_fun) {
+            : event_data_fun(r.event_data_fun), state_event_fun(r.state_event_fun) {
             client = r.client;
             state.store(r.state);
             r.client = nullptr;
@@ -182,9 +191,10 @@ namespace mesp {
 
         void error_check(esp_err_t err, const string& msg = "MQTT错误:") {
             if (err != ESP_OK) {
-                fpr(msg, err);
-                state.store(mqtt_state::error);
-                state.notify_all();
+                diagnostics::mqtt_metrics.mark_error("client", err, 0, 0, msg);
+                diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                                   "MQTT_CLIENT_ERROR", msg + std::to_string(err));
+                set_state(mqtt_state::error);
             }
         }
 
@@ -196,6 +206,15 @@ namespace mesp {
         // mqtt已连接
         bool connected() const noexcept {
             return state == mqtt_state::connected;
+        }
+
+      private:
+        void set_state(int value, bool notify_waiters = true) {
+            state.store(value);
+            if (notify_waiters)
+                state.notify_all();
+            if (state_event_fun != nullptr)
+                state_event_fun(value);
         }
 
     };// Mqttclinet

@@ -10,7 +10,10 @@
 #include "espMQTT.hpp"
 
 #include "channel.hpp"
+#include "diagnostics.hpp"
 
+#include "esp_app_desc.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 
 #include "web_sync.hpp"
@@ -60,8 +63,6 @@ AsyncWebSocket& ws = mesp::ws_server;//先直接用全局的ws_server
 
 inline mstd::channel_lock<std::function<void()>> async_channel;//异步任务通道
 
-inline string last_ws_log = "日志初始化";//可能会有多个webfpr,非线程安全注意,现在单核先不管
-
 // RAII状态管理类，确保在异常或提前返回时也能清理状态
 struct SystemStateGuard {
     bool active;
@@ -84,26 +85,234 @@ struct SystemStateGuard {
 };
 
 
-//@brief WebSocket消息打印
-inline void webfpr(AsyncWebSocket& ws, const string& str) {
-    mstd::fpr("wsmsg: ", str);
-    JsonDocument doc;
-    doc["log"] = str;
-    String msg;
-    serializeJson(doc, msg);
-    ws.textAll(msg);
-    last_ws_log = str;
+inline void filament_log(diagnostics::level severity, std::string_view code, const string& str) {
+    diagnostics::write(severity, diagnostics::log_module::filament, code, str);
 }
 
-//@brief WebSocket消息打印
-inline void webfpr(const string& str) {
-    mstd::fpr("wsmsg: ", str);
+inline const char* reset_reason_label(esp_reset_reason_t reason) {
+    switch (reason) {
+    case ESP_RST_POWERON: return "上电启动";
+    case ESP_RST_EXT: return "外部复位";
+    case ESP_RST_SW: return "软件重启";
+    case ESP_RST_PANIC: return "异常崩溃";
+    case ESP_RST_INT_WDT: return "中断看门狗";
+    case ESP_RST_TASK_WDT: return "任务看门狗";
+    case ESP_RST_WDT: return "其他看门狗";
+    case ESP_RST_DEEPSLEEP: return "深度睡眠唤醒";
+    case ESP_RST_BROWNOUT: return "电压过低";
+    case ESP_RST_SDIO: return "SDIO 复位";
+    case ESP_RST_USB: return "USB 复位";
+    case ESP_RST_JTAG: return "JTAG 复位";
+    case ESP_RST_EFUSE: return "eFuse 错误复位";
+    case ESP_RST_PWR_GLITCH: return "电源毛刺复位";
+    case ESP_RST_CPU_LOCKUP: return "CPU 锁死复位";
+    case ESP_RST_UNKNOWN:
+    default: return "未知原因";
+    }
+}
+
+inline void event_to_json(JsonObject target, const diagnostics::event& value) {
+    target["seq"] = value.seq;
+    target["uptime_ms"] = value.uptime;
+    target["level"] = diagnostics::to_string(value.severity);
+    target["module"] = diagnostics::to_string(value.source);
+    target["code"] = value.code;
+    target["message"] = value.message;
+}
+
+inline void timeline_to_json(JsonObject target, const diagnostics::filament_timeline& value) {
+    target["run_id"] = value.run_id;
+    target["state"] = diagnostics::to_string(value.state);
+    target["from_channel"] = value.from_channel;
+    target["to_channel"] = value.to_channel;
+    target["started_ms"] = value.started_ms;
+    if (value.finished_ms > 0)
+        target["finished_ms"] = value.finished_ms;
+    else
+        target["finished_ms"] = nullptr;
+    target["current_stage"] = diagnostics::to_string(value.current_stage);
+
+    JsonArray stages = target["stages"].to<JsonArray>();
+    constexpr std::array<diagnostics::filament_stage, diagnostics::filament_stage_count> stage_order{
+        diagnostics::filament_stage::trigger,
+        diagnostics::filament_stage::unload,
+        diagnostics::filament_stage::retract,
+        diagnostics::filament_stage::heat,
+        diagnostics::filament_stage::feed,
+        diagnostics::filament_stage::resume,
+    };
+    for (size_t i = 0; i < stage_order.size(); ++i) {
+        JsonObject stage = stages.add<JsonObject>();
+        stage["id"] = diagnostics::to_string(stage_order[i]);
+        stage["state"] = diagnostics::to_string(value.stages[i].state);
+        if (value.stages[i].started_ms > 0)
+            stage["started_ms"] = value.stages[i].started_ms;
+        else
+            stage["started_ms"] = nullptr;
+        if (value.stages[i].finished_ms > 0)
+            stage["finished_ms"] = value.stages[i].finished_ms;
+        else
+            stage["finished_ms"] = nullptr;
+        stage["detail"] = value.stages[i].detail;
+    }
+
+    if (value.last_timeout.present) {
+        JsonObject timeout = target["last_timeout"].to<JsonObject>();
+        timeout["stage"] = diagnostics::to_string(value.last_timeout.stage);
+        timeout["at_ms"] = value.last_timeout.at_ms;
+        timeout["from_channel"] = value.last_timeout.from_channel;
+        timeout["to_channel"] = value.last_timeout.to_channel;
+        timeout["detail"] = value.last_timeout.detail;
+    } else {
+        target["last_timeout"] = nullptr;
+    }
+}
+
+inline void send_diagnostics_event(const diagnostics::event& value) {
     JsonDocument doc;
-    doc["log"] = str;
+    doc["type"] = "diagnostics_event";
+    JsonObject payload = doc["payload"].to<JsonObject>();
+    event_to_json(payload, value);
+    payload["overwritten_count"] = diagnostics::logs.stats().overwritten_count;
     String msg;
     serializeJson(doc, msg);
     ws.textAll(msg);
-    last_ws_log = str;
+}
+
+inline void send_diagnostics_log_reset(uint32_t cleared_through_seq) {
+    JsonDocument doc;
+    doc["type"] = "diagnostics_log_reset";
+    JsonObject payload = doc["payload"].to<JsonObject>();
+    payload["cleared_through_seq"] = cleared_through_seq;
+    String msg;
+    serializeJson(doc, msg);
+    ws.textAll(msg);
+}
+
+inline void broadcast_filament_timeline(const diagnostics::filament_timeline& value) {
+    JsonDocument doc;
+    doc["type"] = "filament_timeline";
+    JsonObject payload = doc["payload"].to<JsonObject>();
+    timeline_to_json(payload, value);
+    String msg;
+    serializeJson(doc, msg);
+    ws.textAll(msg);
+}
+
+inline void send_filament_timeline(AsyncWebSocketClient* client) {
+    if (client == nullptr)
+        return;
+    JsonDocument doc;
+    doc["type"] = "filament_timeline";
+    JsonObject payload = doc["payload"].to<JsonObject>();
+    timeline_to_json(payload, diagnostics::filament_history.snapshot());
+    String msg;
+    serializeJson(doc, msg);
+    client->text(msg);
+}
+
+inline void send_diagnostics_log_history(AsyncWebSocketClient* client) {
+    if (client == nullptr)
+        return;
+
+    size_t offset = 0;
+    bool first_batch = true;
+    while (true) {
+        const diagnostics::log_batch batch = diagnostics::logs.read_batch(offset);
+        JsonDocument doc;
+        doc["type"] = "diagnostics_log_batch";
+        JsonObject payload = doc["payload"].to<JsonObject>();
+        payload["reset"] = first_batch;
+        payload["overwritten_count"] = batch.overwritten_count;
+        payload["total_count"] = batch.total_count;
+        JsonArray events = payload["events"].to<JsonArray>();
+        for (size_t i = 0; i < batch.count; ++i) {
+            JsonObject item = events.add<JsonObject>();
+            event_to_json(item, batch.events[i]);
+        }
+        offset += batch.count;
+        payload["has_more"] = offset < batch.total_count;
+        String msg;
+        serializeJson(doc, msg);
+        client->text(msg);
+        first_batch = false;
+        if (batch.count == 0 || offset >= batch.total_count)
+            break;
+    }
+}
+
+inline void send_diagnostics_snapshot(AsyncWebSocketClient* client) {
+    if (client == nullptr)
+        return;
+
+    const uint64_t now_ms = diagnostics::uptime_ms();
+    const esp_reset_reason_t reset_reason = esp_reset_reason();
+    const diagnostics::mqtt_snapshot mqtt_snapshot = diagnostics::mqtt_metrics.snapshot();
+    const bool wifi_connected = WiFi.status() == WL_CONNECTED;
+
+    JsonDocument doc;
+    doc["type"] = "diagnostics_snapshot";
+    JsonObject payload = doc["payload"].to<JsonObject>();
+    payload["firmware_version"] = esp_app_get_description()->version;
+    payload["uptime_ms"] = now_ms;
+
+    JsonObject reset = payload["reset_reason"].to<JsonObject>();
+    reset["code"] = static_cast<int>(reset_reason);
+    reset["label"] = reset_reason_label(reset_reason);
+
+    JsonObject heap = payload["heap"].to<JsonObject>();
+    heap["free_bytes"] = esp_get_free_heap_size();
+    heap["minimum_free_bytes"] = esp_get_minimum_free_heap_size();
+
+    JsonObject wifi = payload["wifi"].to<JsonObject>();
+    wifi["connected"] = wifi_connected;
+    wifi["ssid"] = wifi_connected ? WiFi.SSID() : String();
+    wifi["ip"] = wifi_connected ? WiFi.localIP().toString() : String();
+    if (wifi_connected)
+        wifi["rssi_dbm"] = WiFi.RSSI();
+    else
+        wifi["rssi_dbm"] = nullptr;
+
+    JsonObject mqtt = payload["mqtt"].to<JsonObject>();
+    mqtt["transport_state"] = diagnostics::to_string(mqtt_snapshot.transport_state);
+    mqtt["stale"] = mqtt_snapshot.stale;
+    mqtt["reconnect_count"] = mqtt_snapshot.reconnect_count;
+    if (mqtt_snapshot.has_last_receive) {
+        mqtt["last_receive_ms"] = mqtt_snapshot.last_receive_ms;
+        mqtt["last_receive_age_ms"] = now_ms - mqtt_snapshot.last_receive_ms;
+    } else {
+        mqtt["last_receive_ms"] = nullptr;
+        mqtt["last_receive_age_ms"] = nullptr;
+    }
+    if (mqtt_snapshot.last_error.present) {
+        JsonObject error = mqtt["last_error"].to<JsonObject>();
+        error["kind"] = mqtt_snapshot.last_error.kind;
+        error["code"] = mqtt_snapshot.last_error.code;
+        error["detail_code"] = mqtt_snapshot.last_error.detail_code;
+        error["socket_errno"] = mqtt_snapshot.last_error.socket_errno;
+        error["at_ms"] = mqtt_snapshot.last_error.at_ms;
+        error["message"] = mqtt_snapshot.last_error.message;
+    } else {
+        mqtt["last_error"] = nullptr;
+    }
+
+    payload["websocket_clients"] = ws.count();
+    JsonObject system = payload["system"].to<JsonObject>();
+    system["operation_status"] = operation_status.get_value();
+    system["locked"] = system_locked.get_value();
+    system["current_channel"] = extruder.get_value();
+    system["motor_running"] = motor_running.get_value();
+    system["ams_status"] = ams_status.load();
+    system["hw_switch"] = hw_switch;
+    system["nozzle_target_c"] = nozzle_target_temper.load();
+
+    String msg;
+    serializeJson(doc, msg);
+    client->text(msg);
+}
+
+inline void mqtt_state_changed(int state) {
+    config::MQTT_done = state == mesp::Mqttclient::mqtt_state::connected;
 }
 
 // @brief 将当前Wi-Fi运行状态发送给指定WebSocket客户端
@@ -185,7 +394,9 @@ inline bool can_update_motor_direction() {
 template <typename T>
 inline void motor_run(int motor_id, bool fwd, T&& t) {
     if (motor_id < 1 || motor_id > config::motors.size()) {
-        webfpr(std::string("电机编号错误:") + std::to_string(motor_id));
+        diagnostics::write(diagnostics::level::error, diagnostics::log_module::motor,
+                           "MOTOR_INVALID_CHANNEL",
+                           "电机编号错误: " + std::to_string(motor_id));
         return;
     }
     motor_id--;
@@ -205,8 +416,9 @@ inline void motor_run(int motor_id, bool fwd, T&& t) {
     const gpio_num_t active_gpio = physical_forward ? motor.forward : motor.backward;
     const gpio_num_t inactive_gpio = physical_forward ? motor.backward : motor.forward;
 
-    webfpr(std::string("电机 ") + std::to_string(motor_id + 1) +
-           (fwd ? " 正转" : " 反转") + (reverse_output ? "（反向输出）" : ""));
+    diagnostics::write(diagnostics::level::info, diagnostics::log_module::motor,
+                       "MOTOR_STARTED", std::string("电机 ") + std::to_string(motor_id + 1) +
+                       (fwd ? " 正转" : " 反转") + (reverse_output ? "（反向输出）" : ""));
 
     // 保证另一方向保持低电平，再驱动本次动作选择的GPIO。
     esp::gpio_out(inactive_gpio, false);
@@ -216,6 +428,8 @@ inline void motor_run(int motor_id, bool fwd, T&& t) {
     
     // 电机运行完成，清除状态
     motor_running = 0;
+    diagnostics::write(diagnostics::level::info, diagnostics::log_module::motor,
+                       "MOTOR_FINISHED", "电机 " + std::to_string(motor_id + 1) + " 运行完成");
 }//motor_run
 
 
@@ -232,20 +446,20 @@ inline void motor_run(int motor_id, bool fwd) {
 
 
 //@brief 发布消息到MQTT服务器
-void publish(esp_mqtt_client_handle_t client, const std::string& msg) {
+int publish(esp_mqtt_client_handle_t client, const std::string& msg) {
     esp::gpio_out(config::LED_L, true);
-    // mstd::delay(2s);
-    fpr("发送消息:", msg);
     int msg_id = esp_mqtt_client_publish(client, config::topic_publish().c_str(), msg.c_str(), msg.size(), 0, 0);
-    //@_@这里的publish用到了topic_publish(默认),耦合了
-    if (msg_id < 0)
-        fpr("发送失败");
-    else
-        fpr("发送成功,消息id=", msg_id);
-    // fpr(TAG, "binary sent with msg_id=%d", msg_id);
+    if (msg_id < 0) {
+        diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                           "MQTT_PUBLISH_FAILED", "MQTT 指令提交失败");
+    } else {
+        diagnostics::write(diagnostics::level::debug, diagnostics::log_module::mqtt,
+                           "MQTT_PUBLISH_QUEUED",
+                           "MQTT 指令已提交，长度 " + std::to_string(msg.size()) +
+                           " 字节，消息 ID " + std::to_string(msg_id));
+    }
     esp::gpio_out(config::LED_L, false);
-    // mstd::delay(2s);//@_@这些延时还可以调
-    //我觉得延时还是加在程序里好调试
+    return msg_id;
 }
 
 
@@ -253,109 +467,162 @@ void publish(esp_mqtt_client_handle_t client, const std::string& msg) {
 
 //换料
 void change_filament(esp_mqtt_client_handle_t client, int old_extruder, int new_extruder) {
-    // 使用RAII确保状态总是被清理
     SystemStateGuard state_guard;
     operation_status = "changing";
-    webfpr("开始换料");
+    diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                       "CHANGE_STARTED",
+                       "开始换料: 通道 " + std::to_string(old_extruder) + " → " +
+                       std::to_string(new_extruder));
     
-    // 查询当前通道使用状态（通过hw_switch_state判断是否有料）
     publish(client, bambu::msg::get_status);
-    mstd::delay(3s);//等待查询结果
+    mstd::delay(3s);
     
-    // 检查当前通道是否在使用中（通过hw_switch_state判断）
     bool has_filament = (hw_switch == 1);
     
-    // 如果当前记录的通道就是目标通道，且检测到有料，直接继续，无需换料
     if (old_extruder == new_extruder && has_filament) {
-        webfpr("当前通道" + std::to_string(new_extruder) + "正在使用中，无需换料");
-        extruder = new_extruder;// 确保记录正确
-        state_guard.release(); // 提前释放状态
-        publish(client, bambu::msg::print_resume);// 暂停恢复
+        diagnostics::filament_history.skip(diagnostics::filament_stage::unload, "同通道无需退料");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::retract, "同通道无需退线");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::heat, "同通道无需重新加热");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::feed, "同通道无需进线");
+        diagnostics::filament_history.start(diagnostics::filament_stage::resume, "提交恢复打印命令");
+        extruder = new_extruder;
+        const int resume_id = publish(client, bambu::msg::print_resume);
+        if (resume_id < 0) {
+            diagnostics::filament_history.fail(diagnostics::filament_stage::resume,
+                                                "恢复命令提交失败", false);
+        } else {
+            diagnostics::filament_history.finish_stage(diagnostics::filament_stage::resume,
+                                                        diagnostics::stage_state::success,
+                                                        "恢复命令已提交");
+            diagnostics::filament_history.finish_run(diagnostics::run_state::skipped);
+        }
+        diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                           "CHANGE_SKIPPED", "当前通道正在使用，无需换料");
+        state_guard.release();
         return;
     }
     
-    // 需要换料的情况：退出旧通道
-    // 如果old_extruder == 0，说明当前无耗材，直接进料新通道
     if (old_extruder > 0 && old_extruder <= config::motors.size()) {
         if (!has_filament) {
-            // 检测到无料，只需要退出当前通道，不需要退料流程
-            webfpr("检测到无料，当前通道" + std::to_string(old_extruder) + "直接退线");
-            motor_run(old_extruder, false);// 退线
+            diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
+                                                "微动未检测到耗材，跳过打印机退料");
+            diagnostics::filament_history.start(diagnostics::filament_stage::retract,
+                                                 "旧通道直接退线");
+            motor_run(old_extruder, false);
+            diagnostics::filament_history.finish_stage(diagnostics::filament_stage::retract,
+                                                        diagnostics::stage_state::success,
+                                                        "旧通道退线完成");
         } else {
-            // 检测到有料，需要完整的退料流程
-            webfpr("检测到有料，当前通道" + std::to_string(old_extruder) + "执行退料");
             if (config::motors[old_extruder - 1].load_time > 0) {
+                diagnostics::filament_history.start(diagnostics::filament_stage::unload,
+                                                     "等待打印机退料状态");
                 publish(client, bambu::msg::runGcode(
                                     "M109 S" + std::to_string(config::motors[old_extruder - 1].temper.get_value()) + "\nM620 S255\nT255\nM621 S255\n"));//新的快速退料
-                webfpr("发送了退料命令,等待退料完成");
                 if (!mstd::atomic_wait_un_timeout(ams_status, 退料完成需要退线, 120s)) {
-                    webfpr("等待退料完成超时，可能打印机未响应");
-                    return; // RAII会自动清理状态
+                    diagnostics::filament_history.fail(diagnostics::filament_stage::unload,
+                                                        "等待退料完成超时", true);
+                    diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
+                                       "UNLOAD_TIMEOUT", "等待退料完成超时，可能打印机未响应");
+                    return;
                 }
-                webfpr("退料完成,需要退线,等待退线完");
+                diagnostics::filament_history.finish_stage(diagnostics::filament_stage::unload,
+                                                            diagnostics::stage_state::success,
+                                                            "打印机退料完成");
 
-                motor_run(old_extruder, false);// 退线
+                diagnostics::filament_history.start(diagnostics::filament_stage::retract,
+                                                     "电机退出旧通道料线");
+                motor_run(old_extruder, false);
 
                 if (!mstd::atomic_wait_un_timeout(ams_status, 退料完成, 30s)) {
-                    webfpr("等待退料完成状态超时，继续执行");
-                    // 继续执行，不返回，因为退线已完成
+                    diagnostics::filament_history.warning_timeout(
+                        diagnostics::filament_stage::retract,
+                        "退线后等待正常状态超时，流程继续");
+                    diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
+                                       "RETRACT_STATE_TIMEOUT", "退线后等待正常状态超时，继续执行");
+                } else {
+                    diagnostics::filament_history.finish_stage(diagnostics::filament_stage::retract,
+                                                                diagnostics::stage_state::success,
+                                                                "退线完成并恢复正常状态");
                 }
+            } else {
+                diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
+                                                    "旧通道未启用固定时间退料");
+                diagnostics::filament_history.skip(diagnostics::filament_stage::retract,
+                                                    "旧通道无需退线");
             }
         }
     } else if (old_extruder == 0) {
-        webfpr("当前无耗材，直接进料新通道");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
+                                            "当前没有已记录耗材");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::retract,
+                                            "当前没有旧通道料线");
+    } else {
+        diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
+                                            "旧通道记录无效，跳过退料");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::retract,
+                                            "旧通道记录无效，跳过退线");
+        diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
+                           "OLD_CHANNEL_INVALID", "旧通道记录无效，直接尝试目标通道进料");
     }
     
-    // 进料新通道
     if (config::motors[new_extruder - 1].load_time > 0) {//使用固定时间进料@_@
-        webfpr("使用固定时间进料到通道" + std::to_string(new_extruder));
-        // ws_extruder = std::to_string(old_extruder) + string(" → ") + std::to_string(new_extruder);
-        //ws_extruder不再使用,可以考虑给前端加一个状态表示正在换料@_@
-
         int new_nozzle_temper = config::motors[new_extruder - 1].temper.get_value();
+        diagnostics::filament_history.start(diagnostics::filament_stage::heat,
+                                             "等待热端达到 " + std::to_string(new_nozzle_temper) + "°C");
         publish(client, bambu::msg::runGcode("M109 S" + std::to_string(new_nozzle_temper)));
         auto temp_deadline = std::chrono::steady_clock::now() + 300s; // 5分钟超时
         while (nozzle_target_temper.load() < new_nozzle_temper - 5) {
             if (std::chrono::steady_clock::now() > temp_deadline) {
-                webfpr("等待热端温度超时，可能打印机未响应");
-                return; // RAII会自动清理状态
+                diagnostics::filament_history.fail(diagnostics::filament_stage::heat,
+                                                    "等待热端温度超时", true);
+                diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
+                                   "HEAT_TIMEOUT", "等待热端温度超时，可能打印机未响应");
+                return;
             }
-            mstd::delay(500ms);// 等待热端温度达到目标温度
+            mstd::delay(500ms);
         }
-        // mstd::delay(5s);//先5s,时间可能取决于热端到250的速度,一个想法是把拉高热端提前能省点时间,但是比较难控制
-        //@_@也可以读热端温度,不过如果读==250的话,肯定是挤出机先转,或者可以考虑条件为>240之类
+        diagnostics::filament_history.finish_stage(diagnostics::filament_stage::heat,
+                                                    diagnostics::stage_state::success,
+                                                    "热端已达到进料条件");
 
-        webfpr("进线");
+        diagnostics::filament_history.start(diagnostics::filament_stage::feed,
+                                             "电机推进目标通道料线");
         publish(client, bambu::msg::runGcode("G1 E150 F500"));//旋转热端齿轮辅助进料
-        mstd::delay(3s);//还是需要延迟,命令落实没这么快
-        motor_run(new_extruder, true);// 进线
+        mstd::delay(3s);
+        motor_run(new_extruder, true);
+        diagnostics::filament_history.finish_stage(diagnostics::filament_stage::feed,
+                                                    diagnostics::stage_state::success,
+                                                    "目标通道进线完成");
 
-        // {//旧的使用进线程序的进料过程
-        // 	publish(client,bambu::msg::load);
-        // 	fpr("发送了料进线命令,等待进线完成");
-        // 	mstd::atomic_wait_un(ams_status,262);
-        // 	mstd::delay(2s);
-        // 	publish(client,bambu::msg::click_done);
-        // 	mstd::delay(2s);
-        // 	mstd::atomic_wait_un(ams_status,263);
-        // 	publish(client,bambu::msg::click_done);
-        // 	mstd::atomic_wait_un(ams_status,进料完成);
-        // 	mstd::delay(2s);
-        // }
+        extruder = new_extruder;
 
-        // 换料完成后再更新extruder，避免在换料过程中被callback_fun读取到新值
-        extruder = new_extruder;//换料完成
-        webfpr("换料完成: 通道" + std::to_string(new_extruder));
-
-        publish(client, bambu::msg::print_resume);// 暂停恢复
+        diagnostics::filament_history.start(diagnostics::filament_stage::resume,
+                                             "提交恢复打印命令");
+        const int resume_id = publish(client, bambu::msg::print_resume);
+        if (resume_id < 0) {
+            diagnostics::filament_history.fail(diagnostics::filament_stage::resume,
+                                                "恢复命令提交失败", false);
+            diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
+                               "RESUME_FAILED", "换料完成，但恢复命令提交失败");
+            return;
+        }
+        diagnostics::filament_history.finish_stage(diagnostics::filament_stage::resume,
+                                                    diagnostics::stage_state::success,
+                                                    "恢复命令已提交");
+        diagnostics::filament_history.finish_run(diagnostics::run_state::success);
+        diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                           "CHANGE_FINISHED", "换料完成: 通道 " + std::to_string(new_extruder));
     } else {//自动判定进料时间
-        webfpr("小绿点判定进料");
-        webfpr("功能未实现，无法完成换料");
-        state_guard.release(); // 提前释放状态
+        diagnostics::filament_history.skip(diagnostics::filament_stage::heat,
+                                            "自动判定进料模式未实现");
+        diagnostics::filament_history.fail(diagnostics::filament_stage::feed,
+                                            "自动判定进料模式未实现", false);
+        diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
+                           "AUTO_FEED_UNAVAILABLE", "自动判定进料功能未实现，无法完成换料");
+        state_guard.release();
         return;
     }
     
-    // 正常完成，释放状态
     state_guard.release();
 }// change_filament
 /*
@@ -371,25 +638,26 @@ void load_filament(int new_extruder) {
 
     // 检查系统是否被锁定（换料或上料进行中）
     if (system_locked.get_value() || pause_lock.load()) {
-        webfpr("系统正在执行其他操作，请稍后再试");
+        filament_log(diagnostics::level::warning, "LOAD_BUSY", "系统正在执行其他操作，请稍后再试");
         return;
     }
 
     // 检查__client是否有效
     if (__client == nullptr) {
-        webfpr("MQTT客户端未初始化，无法执行上料");
+        filament_log(diagnostics::level::error, "LOAD_MQTT_UNAVAILABLE", "MQTT 客户端未初始化，无法执行上料");
         return;
     }
 
     if (!(new_extruder > 0 && new_extruder <= config::motors.size())) {
-        webfpr("不支持的上料通道");
+        filament_log(diagnostics::level::error, "LOAD_INVALID_CHANNEL", "不支持的上料通道");
         return;
     }
 
     // 使用RAII确保状态总是被清理
     SystemStateGuard state_guard;
     operation_status = "loading";
-    webfpr("开始进料");
+    filament_log(diagnostics::level::info, "LOAD_STARTED",
+                 "开始手动上料到通道 " + std::to_string(new_extruder));
 
     {//新写的N20上料
         publish(__client, bambu::msg::get_status);//查询小绿点
@@ -401,37 +669,42 @@ void load_filament(int new_extruder) {
         if (has_filament) {//有料需要检查通道
             int old_extruder = extruder.get_value();
             if (old_extruder == 0) {
-                webfpr("检测到有料但未设置当前通道，请先设置当前通道");
+                filament_log(diagnostics::level::warning, "LOAD_CHANNEL_REQUIRED",
+                             "检测到有料但未设置当前通道，请先设置当前通道");
                 state_guard.release(); // 提前释放状态
                 return;
             }
             if (old_extruder == new_extruder) {
                 // 通道一样，跳过进料
-                webfpr("当前通道已经是" + std::to_string(new_extruder) + "，且检测到有料，跳过进料");
+                filament_log(diagnostics::level::info, "LOAD_SKIPPED",
+                             "当前通道已经是 " + std::to_string(new_extruder) + "，跳过进料");
                 state_guard.release(); // 提前释放状态
                 return;
             }
             // 通道变更，需要先退料
-            webfpr("检测到有料且通道变更(" + std::to_string(old_extruder) + " → " + std::to_string(new_extruder) + ")，执行退料");
+            filament_log(diagnostics::level::info, "LOAD_REQUIRES_UNLOAD",
+                         "检测到有料且通道变更(" + std::to_string(old_extruder) + " → " +
+                         std::to_string(new_extruder) + ")，执行退料");
             publish(__client, bambu::msg::runGcode(
                                   "M109 S" + std::to_string(config::motors[old_extruder - 1].temper.get_value()) + "\nM620 S255\nT255\nM621 S255\n"));//新的快速退料
-            webfpr("发送了退料命令,等待退料完成");
             if (!mstd::atomic_wait_un_timeout(ams_status, 退料完成需要退线, 120s)) {
-                webfpr("等待退料完成超时，可能打印机未响应");
+                filament_log(diagnostics::level::error, "LOAD_UNLOAD_TIMEOUT",
+                             "手动上料前等待退料完成超时");
                 return; // RAII会自动清理状态
             }
-            webfpr("退料完成,需要退线,等待退线完");
+            filament_log(diagnostics::level::info, "LOAD_UNLOAD_FINISHED", "退料完成，开始退线");
 
             motor_run(old_extruder, false);// 退线
 
             if (!mstd::atomic_wait_un_timeout(ams_status, 退料完成, 30s)) {
-                webfpr("等待退料完成状态超时，继续执行");
+                filament_log(diagnostics::level::warning, "LOAD_RETRACT_STATE_TIMEOUT",
+                             "退线后等待正常状态超时，继续执行");
                 // 继续执行，不返回，因为退线已完成
             }
-            webfpr("退线完成");
+            filament_log(diagnostics::level::info, "LOAD_RETRACT_FINISHED", "退线完成");
         } else {
             // 无料，直接进料
-            webfpr("检测到无料，直接进料");
+            filament_log(diagnostics::level::info, "LOAD_NO_FILAMENT", "检测到无料，直接进料");
         }//if (has_filament)
         {//进料
             int new_nozzle_temper = config::motors[new_extruder - 1].temper.get_value();
@@ -439,7 +712,8 @@ void load_filament(int new_extruder) {
             auto temp_deadline = std::chrono::steady_clock::now() + 300s; // 5分钟超时
             while (nozzle_target_temper.load() < new_nozzle_temper - 5) {
                 if (std::chrono::steady_clock::now() > temp_deadline) {
-                    webfpr("等待热端温度超时，可能打印机未响应");
+                    filament_log(diagnostics::level::error, "LOAD_HEAT_TIMEOUT",
+                                 "手动上料等待热端温度超时");
                     return; // RAII会自动清理状态
                 }
                 mstd::delay(500ms);// 等待热端温度达到目标温度
@@ -447,7 +721,7 @@ void load_filament(int new_extruder) {
             // mstd::delay(5s);//先5s,时间可能取决于热端到250的速度,一个想法是把拉高热端提前能省点时间,但是比较难控制
             //@_@也可以读热端温度,不过如果读==250的话,肯定是挤出机先转,或者可以考虑条件为>240之类
 
-            webfpr("进线");
+            filament_log(diagnostics::level::info, "LOAD_FEEDING", "开始进线");
             publish(__client, bambu::msg::runGcode("G1 E150 F500"));//旋转热端齿轮辅助进料
             mstd::delay(3s);//还是需要延迟,命令落实没这么快
             motor_run(new_extruder, true);// 进线
@@ -467,7 +741,8 @@ void load_filament(int new_extruder) {
                         + std::string("G1 X -3.5 F18000\nG1 X -13.5 F3000\nG1 X -3.5 F18000\nG1 X -13.5 F3000\nG1 X -3.5 F18000\nG1 X -13.5 F3000\n")//切屎
                         + std::string("M400\nM106 P1 S0\nM109 S90\n")));//结束并降温到90
         }
-        webfpr("上料完成");
+        filament_log(diagnostics::level::info, "LOAD_FINISHED",
+                     "手动上料完成: 通道 " + std::to_string(new_extruder));
     }//新写的N20上料
 
     // 正常完成，释放状态
@@ -485,7 +760,7 @@ void work(mesp::Mqttclient& Mqtt) {//之后应该修改好mesp::Mqttclient生命
     Mqtt.subscribe(config::topic_subscribe());// 订阅消息
 
     // 应用启动时检查小绿点状态并初始化通道
-    webfpr("检查挤出机状态...");
+    filament_log(diagnostics::level::info, "FILAMENT_PROBE", "检查挤出机耗材状态");
     publish(__client, bambu::msg::get_status);
     mstd::delay(3s);//等待查询结果
     
@@ -494,14 +769,17 @@ void work(mesp::Mqttclient& Mqtt) {//之后应该修改好mesp::Mqttclient生命
         // 有料，默认设置为通道1
         if (extruder.get_value() == 0) {
             extruder = 1;
-            webfpr("检测到挤出机有料，默认设置为通道1");
+            filament_log(diagnostics::level::info, "FILAMENT_CHANNEL_DEFAULTED",
+                         "检测到挤出机有料，默认设置为通道 1");
         } else {
-            webfpr("检测到挤出机有料，当前通道: " + std::to_string(extruder.get_value()));
+            filament_log(diagnostics::level::info, "FILAMENT_DETECTED",
+                         "检测到挤出机有料，当前通道: " + std::to_string(extruder.get_value()));
         }
     } else {
         // 无料，设置为空
         extruder = 0;
-        webfpr("检测到挤出机无料，当前通道设置为空");
+        filament_log(diagnostics::level::info, "FILAMENT_EMPTY",
+                     "检测到挤出机无料，当前通道设置为空");
     }
 
     int cnt = 0;
@@ -518,6 +796,11 @@ void callback_fun(esp_mqtt_client_handle_t client, const std::string& json) {// 
     using namespace ArduinoJson;
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, json);
+    if (error) {
+        diagnostics::write(diagnostics::level::warning, diagnostics::log_module::mqtt,
+                           "MQTT_JSON_INVALID", "收到无法解析的 MQTT JSON");
+        return;
+    }
 
     // mesp::print_memory_info();
 
@@ -543,7 +826,8 @@ void callback_fun(esp_mqtt_client_handle_t client, const std::string& json) {// 
         if (gcode_state == "PAUSE") {
             // 如果正在换料中，忽略新的换料请求，避免重复触发
             if (pause_lock.load() || system_locked.get_value()) {
-                fpr("换料进行中，忽略新的换料请求");
+                diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
+                                   "CHANGE_DUPLICATE", "换料进行中，忽略新的换料请求");
                 return;
             }
             
@@ -552,17 +836,40 @@ void callback_fun(esp_mqtt_client_handle_t client, const std::string& json) {// 
             
             // 保存通道号，避免在恢复热床温度时丢失
             int new_extruder = bed_target_temper;
-            
+            int old_extruder = extruder;
+            diagnostics::filament_history.begin(
+                old_extruder, new_extruder,
+                "检测到暂停换料触发，目标通道 " + std::to_string(new_extruder));
+
             // 验证新通道的有效性
             if (new_extruder < 1 || new_extruder > config::motors.size()) {
-                fpr("无效的通道编号: " + std::to_string(new_extruder));
+                diagnostics::filament_history.finish_stage(diagnostics::filament_stage::trigger,
+                                                            diagnostics::stage_state::error,
+                                                            "目标通道无效");
+                diagnostics::filament_history.skip(diagnostics::filament_stage::unload, "触发失败");
+                diagnostics::filament_history.skip(diagnostics::filament_stage::retract, "触发失败");
+                diagnostics::filament_history.skip(diagnostics::filament_stage::heat, "触发失败");
+                diagnostics::filament_history.skip(diagnostics::filament_stage::feed, "触发失败");
+                diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
+                                   "CHANGE_INVALID_CHANNEL",
+                                   "无效的目标通道: " + std::to_string(new_extruder));
                 if (bed_target_temper_max > 0) {
                     publish(client, bambu::msg::runGcode(std::string("M190 S") + std::to_string(bed_target_temper_max)));//恢复原来的热床温度
                 }
                 mstd::delay(1000ms);
-                publish(client, bambu::msg::print_resume);
+                diagnostics::filament_history.start(diagnostics::filament_stage::resume,
+                                                     "提交恢复打印命令");
+                const int resume_id = publish(client, bambu::msg::print_resume);
+                diagnostics::filament_history.finish_stage(
+                    diagnostics::filament_stage::resume,
+                    resume_id < 0 ? diagnostics::stage_state::error : diagnostics::stage_state::success,
+                    resume_id < 0 ? "恢复命令提交失败" : "恢复命令已提交");
+                diagnostics::filament_history.finish_run(diagnostics::run_state::error);
                 return;
             }
+            diagnostics::filament_history.finish_stage(diagnostics::filament_stage::trigger,
+                                                        diagnostics::stage_state::success,
+                                                        "换料触发已确认");
             
             // 先恢复热床温度（如果bed_target_temper_max > 0）
             if (bed_target_temper_max > 0) {// 似乎热床置零会导致热端固定到90
@@ -572,10 +879,11 @@ void callback_fun(esp_mqtt_client_handle_t client, const std::string& json) {// 
                                     ));
             }
 
-            int old_extruder = extruder;
-            
             if (old_extruder != new_extruder) {//旧通道不等于新通道
-                fpr("唤醒换料程序: 通道" + std::to_string(old_extruder) + " → 通道" + std::to_string(new_extruder));
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                                   "CHANGE_QUEUED",
+                                   "换料任务已入队: 通道 " + std::to_string(old_extruder) +
+                                   " → " + std::to_string(new_extruder));
                 pause_lock = true;
                 // 使用捕获值而不是引用，避免bed_target_temper被修改影响
                 async_channel.emplace([=]() {
@@ -583,15 +891,35 @@ void callback_fun(esp_mqtt_client_handle_t client, const std::string& json) {// 
                 });
             } else {// 同一通道，无需换料
                 if (!pause_lock.load()) {// 可能会收到旧消息
-                    fpr("同一耗材,无需换料");
+                    diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
+                                                        "同通道无需退料");
+                    diagnostics::filament_history.skip(diagnostics::filament_stage::retract,
+                                                        "同通道无需退线");
+                    diagnostics::filament_history.skip(diagnostics::filament_stage::heat,
+                                                        "同通道无需重新加热");
+                    diagnostics::filament_history.skip(diagnostics::filament_stage::feed,
+                                                        "同通道无需进线");
                     if (bed_target_temper_max > 0) {
                         publish(client, bambu::msg::runGcode(std::string("M190 S") + std::to_string(bed_target_temper_max)));//恢复原来的热床温度
                     }
                     mstd::delay(1000ms);//确保暂停动作完成
-                    publish(client, bambu::msg::print_resume);// 无须换料
+                    diagnostics::filament_history.start(diagnostics::filament_stage::resume,
+                                                         "提交恢复打印命令");
+                    const int resume_id = publish(client, bambu::msg::print_resume);
+                    if (resume_id < 0) {
+                        diagnostics::filament_history.fail(diagnostics::filament_stage::resume,
+                                                            "恢复命令提交失败", false);
+                    } else {
+                        diagnostics::filament_history.finish_stage(
+                            diagnostics::filament_stage::resume,
+                            diagnostics::stage_state::success, "恢复命令已提交");
+                        diagnostics::filament_history.finish_run(diagnostics::run_state::skipped);
+                    }
+                    diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                                       "CHANGE_SKIPPED", "目标通道与当前通道相同，无需换料");
                 } else {
-                    // pause_lock已设置，说明换料正在进行中，忽略此消息
-                    fpr("换料进行中，忽略重复消息");
+                    diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
+                                       "CHANGE_DUPLICATE", "换料进行中，忽略重复消息");
                 }
             }
             // 注意：不要在换料过程中恢复bed_target_temper，避免影响换料流程
@@ -615,9 +943,11 @@ void callback_fun(esp_mqtt_client_handle_t client, const std::string& json) {// 
 
     int ams_status_now = doc["print"]["ams_status"] | -1;
     if (ams_status_now != -1) {
-        fpr("asm_status_now:", ams_status_now);
-        if (ams_status.exchange(ams_status_now) != ams_status_now)
+        if (ams_status.exchange(ams_status_now) != ams_status_now) {
+            diagnostics::write(diagnostics::level::debug, diagnostics::log_module::filament,
+                               "AMS_STATUS", "AMS 状态更新为 " + std::to_string(ams_status_now));
             ams_status.notify_one();
+        }
     }
 
 }// callback
@@ -633,13 +963,16 @@ void Task1(void* param) {
             if (config::assist_feeding_enabled.get_value() == 1) {
                 int now_extruder = extruder.get_value();
                 if (now_extruder > 0 && now_extruder <= config::motors.size()) {
-                    webfpr("微动触发，辅助进料");
+                    diagnostics::write(diagnostics::level::info, diagnostics::log_module::motor,
+                                       "ASSIST_TRIGGERED", "微动触发，执行辅助进料");
                     motor_run(now_extruder, true, 1s);// 进线
                 } else {
-                    webfpr("微动触发，但当前无有效通道");
+                    diagnostics::write(diagnostics::level::warning, diagnostics::log_module::motor,
+                                       "ASSIST_NO_CHANNEL", "微动触发，但当前无有效通道");
                 }
             } else {
-                webfpr("微动触发，但辅助进料已关闭");
+                diagnostics::write(diagnostics::level::debug, diagnostics::log_module::motor,
+                                   "ASSIST_DISABLED", "微动触发，但辅助进料已关闭");
             }
         }
 
@@ -652,19 +985,20 @@ void Task1(void* param) {
 void Task2(void* param) {
     while (true) {
         mstd::delay(1000ms);
-        mesp::time_out++;
-        if (mesp::time_out > 8) {
-            webfpr("打印机连接超时请检查网络状态");
-            mstd::delay(5000ms);
+        if (diagnostics::mqtt_metrics.mark_stale_if_needed()) {
+            diagnostics::write(diagnostics::level::warning, diagnostics::log_module::mqtt,
+                               "MQTT_DATA_STALE", "MQTT 已超过 8 秒未收到打印机数据");
         }
-    }//延时打印内存信息
-}//其实这个应该放在mqtt那边,作为错误处理的一部分@_@
+    }
+}
 
 #include "index.hpp"
 
 volatile bool running_flag{false};
 
 extern "C" void app_main() {
+    diagnostics::write(diagnostics::level::info, diagnostics::log_module::system,
+                       "SYSTEM_BOOT", "Top-AMS 固件启动");
 #ifndef LOCAL_CONFIG
     for (size_t i = 0; i < config::motors.size(); i++) {
         auto& x = config::motors[i];
@@ -684,6 +1018,8 @@ extern "C" void app_main() {
         string Wifi_pass = wificonfig.get("Wifi_pass", "");
 
         if (Wifi_ssid == "") {
+            diagnostics::write(diagnostics::level::info, diagnostics::log_module::wifi,
+                               "WIFI_SMARTCONFIG", "等待 SmartConfig 配网");
             WiFi.mode(WIFI_AP_STA);
             WiFi.beginSmartConfig();
 
@@ -692,7 +1028,6 @@ extern "C" void app_main() {
                 delay(1000);
                 esp::gpio_out(config::LED_R, cnt % 2);
                 ++cnt;
-                fpr("Waiting for SmartConfig");
             }
 
             Wifi_ssid = WiFi.SSID().c_str();
@@ -701,17 +1036,19 @@ extern "C" void app_main() {
             wificonfig.set("Wifi_ssid", Wifi_ssid);
             wificonfig.set("Wifi_pass", Wifi_pass);
         } else {
+            diagnostics::write(diagnostics::level::info, diagnostics::log_module::wifi,
+                               "WIFI_CONNECTING", "正在连接已保存的 Wi-Fi");
             WiFi.begin(Wifi_ssid.c_str(), Wifi_pass.c_str());
         }
 
         // 等待WiFi连接到路由器
         while (WiFi.status() != WL_CONNECTED) {
             delay(500);
-            fpr("Waiting for WiFi Connected");
         }
 
-        fpr("WiFi Connected to AP");
-        fpr("IP Address: ", (int)WiFi.localIP()[0], ".", (int)WiFi.localIP()[1], ".", (int)WiFi.localIP()[2], ".", (int)WiFi.localIP()[3]);
+        diagnostics::write(diagnostics::level::info, diagnostics::log_module::wifi,
+                           "WIFI_CONNECTED",
+                           std::string("Wi-Fi 已连接，IP ") + WiFi.localIP().toString().c_str());
         esp::gpio_out(config::LED_R, false);
     }// wifi连接部分
 
@@ -739,11 +1076,10 @@ extern "C" void app_main() {
         // 配置 WebSocket 事件处理
         ws.onEvent([&mqtt_Signal](AsyncWebSocket* server, AsyncWebSocketClient* client, AwsEventType type, void* arg, uint8_t* data, size_t len) {
             if (type == WS_EVT_CONNECT) {
-                fpr("WebSocket 客户端", client->id(), "已连接\n");
-                fpr(last_ws_log);
-                webfpr(last_ws_log);
-
                 send_wifi_status(client);
+                send_diagnostics_snapshot(client);
+                send_filament_timeline(client);
+                send_diagnostics_log_history(client);
 
                 JsonDocument doc;
                 JsonObject root = doc.to<JsonObject>();
@@ -751,18 +1087,25 @@ extern "C" void app_main() {
 
                 for (auto& [name, to_json] : mesp::ws_value_to_json)
                     to_json(doc);// 添加当前值到data数组
-                mesp::sendJson(doc);// 发送所有注册的值
+                String state_msg;
+                serializeJson(doc, state_msg);
+                client->text(state_msg);// 只向新连接的客户端发送初始状态
 
-                fpr(doc);
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::web,
+                                   "WS_CONNECTED",
+                                   "WebSocket 客户端 " + std::to_string(client->id()) + " 已连接");
             } else if (type == WS_EVT_DISCONNECT) {
-                fpr("WebSocket 客户端 ", client->id(), "已断开\n");
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::web,
+                                   "WS_DISCONNECTED",
+                                   "WebSocket 客户端 " + std::to_string(client->id()) + " 已断开");
             } else if (type == WS_EVT_DATA) {// 处理接收到的数据
-                fpr("收到ws数据");
-                data[len] = 0;// 确保字符串终止
-
                 JsonDocument doc;
-                deserializeJson(doc, data);
-                fpr("ws收到的json\n", doc, "\n");
+                const DeserializationError error = deserializeJson(doc, data, len);
+                if (error) {
+                    diagnostics::write(diagnostics::level::warning, diagnostics::log_module::web,
+                                       "WS_JSON_INVALID", "收到无法解析的 WebSocket JSON");
+                    return;
+                }
 
 
                 if (doc.containsKey("data") && doc["data"].is<JsonArray>()) {
@@ -773,7 +1116,8 @@ extern "C" void app_main() {
                             if (it != mesp::ws_value_update.end()) {
                                 const bool is_reverse_setting = is_motor_reverse_setting(name);
                                 if (is_reverse_setting && !can_update_motor_direction()) {
-                                    webfpr("系统忙碌，无法修改电机输出方向");
+                                    diagnostics::write(diagnostics::level::warning, diagnostics::log_module::motor,
+                                                       "MOTOR_CONFIG_BUSY", "系统忙碌，无法修改电机输出方向");
                                     sync_ws_value(name);//拒绝修改并恢复前端显示
                                 } else {
                                     it->second(obj);//更新值
@@ -794,6 +1138,10 @@ extern "C" void app_main() {
                 if (command != "_null") {//处理命令json
                     if (command == "get_wifi_status") {
                         send_wifi_status(client);
+                    } else if (command == "get_diagnostics_snapshot") {
+                        send_diagnostics_snapshot(client);
+                    } else if (command == "clear_diagnostic_logs") {
+                        diagnostics::clear_logs();
                     } else if (command == "motor_forward") {//电机前向控制
                         int motor_id = doc["action"]["value"] | -1;
                         async_channel.emplace(
@@ -810,18 +1158,20 @@ extern "C" void app_main() {
                         int new_extruder = doc["action"]["value"] | -1;
                         async_channel.emplace(
                             [new_extruder]() {
-                                fpr("上料");
                                 load_filament(new_extruder);
                             });
 
                     } else {
-                        fpr("未知命令:", command);
+                        diagnostics::write(diagnostics::level::warning, diagnostics::log_module::web,
+                                           "WS_COMMAND_UNKNOWN", "未知 WebSocket 命令: " + command);
                     }
                 }//if command
 
             }//WS_EVT_DATA
         });
         server.addHandler(&ws);
+        diagnostics::set_log_sinks(send_diagnostics_event, send_diagnostics_log_reset);
+        diagnostics::set_timeline_sink(broadcast_filament_timeline);
 
         // 设置未找到路径的处理
         server.onNotFound([](AsyncWebServerRequest* request) {
@@ -830,45 +1180,51 @@ extern "C" void app_main() {
 
         // 启动服务器
         server.begin();
-        fpr("HTTP 服务器已启动");
+        diagnostics::write(diagnostics::level::info, diagnostics::log_module::web,
+                           "HTTP_STARTED", "HTTP 服务器已启动");
     }
 
 
     {// 打印机Mqtt配置
         if (MQTT_pass != "") {// 有旧数据,可以先连MQTT
-            fpr("当前MQTT配置\n", bambu_ip, '\n', MQTT_pass, '\n', device_serial);
-            mesp::Mqttclient Mqtt(mqtt_server(bambu_ip), mqtt_username, MQTT_pass, callback_fun);
-            webfpr(ws, "MQTT连接中...");
+            mesp::Mqttclient Mqtt(mqtt_server(bambu_ip), mqtt_username, MQTT_pass,
+                                  callback_fun, mqtt_state_changed);
+            diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                               "MQTT_CONNECT_REQUEST", "正在使用已保存配置连接 MQTT");
             Mqtt.wait();
             if (Mqtt.connected()) {
-                auto temp = last_ws_log;
-                webfpr("MQTT连接成功");
-                last_ws_log = temp;//@_@或许应该改改webfpr,让它不覆盖
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                                   "MQTT_READY", "MQTT 连接成功，开始订阅打印机状态");
                 MQTT_done = true;
                 work(Mqtt);
             } else {
                 MQTT_done = false;
-                //Mqtt错误反馈分类
-                webfpr(ws, "MQTT连接错误");
+                diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                                   "MQTT_CONNECT_FAILED", "MQTT 初始连接失败");
             }
         }//if (MQTT_pass != "")
+        else {
+            diagnostics::mqtt_metrics.mark_not_configured();
+            diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                               "MQTT_NOT_CONFIGURED", "MQTT 尚未配置");
+        }
 
         while (!MQTT_done) {
-            fpr("等待Mqtt配置");
             mqtt_Signal.acquire();// 等待mqtt配置
-            fpr("当前MQTT配置\n", bambu_ip, '\n', MQTT_pass, '\n', device_serial);
-            mesp::Mqttclient Mqtt(mqtt_server(bambu_ip), mqtt_username, MQTT_pass, callback_fun);
-            webfpr(ws, "MQTT连接中...");
+            mesp::Mqttclient Mqtt(mqtt_server(bambu_ip), mqtt_username, MQTT_pass,
+                                  callback_fun, mqtt_state_changed);
+            diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                               "MQTT_CONNECT_REQUEST", "收到配置，正在连接 MQTT");
             Mqtt.wait();
             if (Mqtt.connected()) {
-                webfpr("MQTT连接成功");
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::mqtt,
+                                   "MQTT_READY", "MQTT 连接成功，开始订阅打印机状态");
                 MQTT_done = true;
                 work(Mqtt);
             } else {
-                //Mqtt错误反馈分类
                 MQTT_done = false;
-
-                webfpr(ws, "MQTT连接错误");
+                diagnostics::write(diagnostics::level::error, diagnostics::log_module::mqtt,
+                                   "MQTT_CONNECT_FAILED", "MQTT 连接失败");
             }
         }
     }

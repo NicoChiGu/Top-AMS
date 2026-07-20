@@ -97,8 +97,13 @@ jobs:
           command: |
             set -eu
             CONFIG="${{ matrix.motor_config }}"
+            PROJECT_VERSION="${{ inputs.release_tag }}"
             mkdir -p dist
-            idf.py build -DMOTOR_CONFIG="${CONFIG}"
+            if [ -n "${PROJECT_VERSION}" ]; then
+              idf.py build -DMOTOR_CONFIG="${CONFIG}" -DPROJECT_VER="${PROJECT_VERSION}"
+            else
+              idf.py build -DMOTOR_CONFIG="${CONFIG}"
+            fi
             python -m esptool --chip esp32c3 merge_bin \
               -o "dist/Top-AMS-${CONFIG}.bin" \
               --flash_mode dio --flash_freq 80m --flash_size 4MB \
