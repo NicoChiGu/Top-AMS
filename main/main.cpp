@@ -1069,8 +1069,10 @@ extern "C" void app_main() {
 
     {//服务器配置部分
         server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-            // request->send(200, "text/html", web.c_str());
-            request->send(200, "text/html", web.data());
+            // The const char* overload copies the whole page into an Arduino String.
+            // Use the fixed-length program-memory response to avoid a ~64 KB heap allocation.
+            request->send(200, "text/html; charset=utf-8",
+                          reinterpret_cast<const uint8_t*>(web.data()), web.size());
         });
 
         // 配置 WebSocket 事件处理

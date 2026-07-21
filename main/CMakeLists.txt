@@ -50,3 +50,6 @@ add_custom_target(
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}  # 设置工作目录为脚本所在位置
     COMMENT "RUN convert_html_to_hpp.py with CHANNEL_COUNT=${CHANNEL_COUNT}..."  # 可选：添加构建时的提示信息
 )
+
+# index.hpp must exist before main.cpp is compiled, especially on a clean build.
+add_dependencies(${COMPONENT_LIB} run_helloworld)
