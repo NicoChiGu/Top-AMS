@@ -4,6 +4,7 @@
 #include <chrono>
 
 #include "esptools.hpp"
+#include "filament_change_trigger.hpp"
 
 #include "bambu.hpp"
 #include "espIO.hpp"
@@ -40,6 +41,9 @@ int sequence_id = -1;
 std::atomic<int> print_error = 0;//打印错误代码用于判断自动续料 50364437是A1 50364420是P1
 std::atomic<int> ams_status = -1;
 std::atomic<bool> pause_lock{false};// 暂停锁
+filament_change::trigger_state change_trigger;
+filament_change::trigger_readiness last_change_trigger_readiness = filament_change::trigger_readiness::idle;
+bool change_trigger_busy_logged = false;
 std::atomic<int> nozzle_target_temper = -1;
 //std::atomic<int> hw_switch{0};//小绿点, 其实是布尔
 
@@ -312,6 +316,11 @@ inline void send_diagnostics_snapshot(AsyncWebSocketClient* client) {
 }
 
 inline void mqtt_state_changed(int state) {
+    if (state != mesp::Mqttclient::mqtt_state::connected) {
+        change_trigger.reset();
+        last_change_trigger_readiness = filament_change::trigger_readiness::idle;
+        change_trigger_busy_logged = false;
+    }
     config::MQTT_done = state == mesp::Mqttclient::mqtt_state::connected;
 }
 
@@ -513,11 +522,22 @@ void change_filament(esp_mqtt_client_handle_t client, int old_extruder, int new_
                                                         diagnostics::stage_state::success,
                                                         "旧通道退线完成");
         } else {
-            if (config::motors[old_extruder - 1].load_time > 0) {
+            if (config::motors[old_extruder - 1].uload_time.get_value() > 0) {
                 diagnostics::filament_history.start(diagnostics::filament_stage::unload,
                                                      "等待打印机退料状态");
-                publish(client, bambu::msg::runGcode(
-                                    "M109 S" + std::to_string(config::motors[old_extruder - 1].temper.get_value()) + "\nM620 S255\nT255\nM621 S255\n"));//新的快速退料
+                // Do not let a retained 260 from an earlier printer operation
+                // satisfy this unload before the new command has produced a state.
+                ams_status.store(-1);
+                const int unload_id = publish(client, bambu::msg::runGcode(
+                    "M109 S" + std::to_string(config::motors[old_extruder - 1].temper.get_value()) +
+                    "\nM620 S255\nT255\nM621 S255\n"));//新的快速退料
+                if (unload_id < 0) {
+                    diagnostics::filament_history.fail(diagnostics::filament_stage::unload,
+                                                        "退料命令提交失败", false);
+                    diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
+                                       "UNLOAD_PUBLISH_FAILED", "退料命令提交失败，终止本次换料");
+                    return;
+                }
                 if (!mstd::atomic_wait_un_timeout(ams_status, 退料完成需要退线, 120s)) {
                     diagnostics::filament_history.fail(diagnostics::filament_stage::unload,
                                                         "等待退料完成超时", true);
@@ -546,9 +566,9 @@ void change_filament(esp_mqtt_client_handle_t client, int old_extruder, int new_
                 }
             } else {
                 diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
-                                                    "旧通道未启用固定时间退料");
+                                                    "旧通道未配置退线时间");
                 diagnostics::filament_history.skip(diagnostics::filament_stage::retract,
-                                                    "旧通道无需退线");
+                                                    "旧通道退线时间为零");
             }
         }
     } else if (old_extruder == 0) {
@@ -804,149 +824,157 @@ void callback_fun(esp_mqtt_client_handle_t client, const std::string& json) {// 
 
     // mesp::print_memory_info();
 
-    static int bed_target_temper = -1;
-    // static int nozzle_target_temper = -1;
-    bed_target_temper = doc["print"]["bed_target_temper"] | bed_target_temper;
-    nozzle_target_temper.store(doc["print"]["nozzle_target_temper"] | nozzle_target_temper.load());
-    std::string gcode_state = doc["print"]["gcode_state"] | "unkonw";
-    hw_switch = doc["print"]["hw_switch_state"] | hw_switch;
-    // print_error.store(doc["print"]["print_error"] | print_error.load());
+    JsonVariantConst print = doc["print"];
+    if (!print["bed_target_temper"].isNull())
+        change_trigger.update_bed_target(print["bed_target_temper"].as<int>());
+    if (!print["gcode_state"].isNull())
+        change_trigger.update_gcode_state(print["gcode_state"].as<std::string>());
+    if (!print["nozzle_target_temper"].isNull())
+        nozzle_target_temper.store(print["nozzle_target_temper"].as<int>());
+    if (!print["hw_switch_state"].isNull())
+        hw_switch = print["hw_switch_state"].as<int>();
 
-
-    // fpr("hw_switch:" + std::to_string(hw_switch));//小绿点状态
-    //int nextChannel1 = config::motors[1].next_channel.get_value();
-    //fpr("电机[1]的下一个通道值: " + std::to_string(nextChannel1));
-    // fpr("print_error:" + std::to_string(print_error));//打印错误代码
-
-
-
-
-    //@_@这边也有些混乱,实质都是因为打印机网络这边不是很稳定所遗留的写法,需要更好的处理
-    if (bed_target_temper > 0 && bed_target_temper < 17) {// 读到的温度是通道
-        if (gcode_state == "PAUSE") {
-            // 如果正在换料中，忽略新的换料请求，避免重复触发
-            if (pause_lock.load() || system_locked.get_value()) {
-                diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
-                                   "CHANGE_DUPLICATE", "换料进行中，忽略新的换料请求");
-                return;
-            }
-            
-            // mstd::delay(4s);//确保暂停动作(3.5s)完成
-            // mstd::delay(4500ms);// 貌似4s还是有可能会有bug,貌似bug本质是以前发gcode忘了\n,现在应该不用延时
-            
-            // 保存通道号，避免在恢复热床温度时丢失
-            int new_extruder = bed_target_temper;
-            int old_extruder = extruder;
-            diagnostics::filament_history.begin(
-                old_extruder, new_extruder,
-                "检测到暂停换料触发，目标通道 " + std::to_string(new_extruder));
-
-            // 验证新通道的有效性
-            if (new_extruder < 1 || new_extruder > config::motors.size()) {
-                diagnostics::filament_history.finish_stage(diagnostics::filament_stage::trigger,
-                                                            diagnostics::stage_state::error,
-                                                            "目标通道无效");
-                diagnostics::filament_history.skip(diagnostics::filament_stage::unload, "触发失败");
-                diagnostics::filament_history.skip(diagnostics::filament_stage::retract, "触发失败");
-                diagnostics::filament_history.skip(diagnostics::filament_stage::heat, "触发失败");
-                diagnostics::filament_history.skip(diagnostics::filament_stage::feed, "触发失败");
-                diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
-                                   "CHANGE_INVALID_CHANNEL",
-                                   "无效的目标通道: " + std::to_string(new_extruder));
-                if (bed_target_temper_max > 0) {
-                    publish(client, bambu::msg::runGcode(std::string("M190 S") + std::to_string(bed_target_temper_max)));//恢复原来的热床温度
-                }
-                mstd::delay(1000ms);
-                diagnostics::filament_history.start(diagnostics::filament_stage::resume,
-                                                     "提交恢复打印命令");
-                const int resume_id = publish(client, bambu::msg::print_resume);
-                diagnostics::filament_history.finish_stage(
-                    diagnostics::filament_stage::resume,
-                    resume_id < 0 ? diagnostics::stage_state::error : diagnostics::stage_state::success,
-                    resume_id < 0 ? "恢复命令提交失败" : "恢复命令已提交");
-                diagnostics::filament_history.finish_run(diagnostics::run_state::error);
-                return;
-            }
-            diagnostics::filament_history.finish_stage(diagnostics::filament_stage::trigger,
-                                                        diagnostics::stage_state::success,
-                                                        "换料触发已确认");
-            
-            // 先恢复热床温度（如果bed_target_temper_max > 0）
-            if (bed_target_temper_max > 0) {// 似乎热床置零会导致热端固定到90
-                publish(client, bambu::msg::runGcode(
-                                    std::string("M190 S") + std::to_string(bed_target_temper_max)// 恢复原来的热床温度
-                                    // + std::string(R"(\nM109 S255)")//提前升温,9系命令自带阻塞,应该无法使两条一起生效
-                                    ));
-            }
-
-            if (old_extruder != new_extruder) {//旧通道不等于新通道
-                diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
-                                   "CHANGE_QUEUED",
-                                   "换料任务已入队: 通道 " + std::to_string(old_extruder) +
-                                   " → " + std::to_string(new_extruder));
-                pause_lock = true;
-                // 使用捕获值而不是引用，避免bed_target_temper被修改影响
-                async_channel.emplace([=]() {
-                    change_filament(client, old_extruder, new_extruder);
-                });
-            } else {// 同一通道，无需换料
-                if (!pause_lock.load()) {// 可能会收到旧消息
-                    diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
-                                                        "同通道无需退料");
-                    diagnostics::filament_history.skip(diagnostics::filament_stage::retract,
-                                                        "同通道无需退线");
-                    diagnostics::filament_history.skip(diagnostics::filament_stage::heat,
-                                                        "同通道无需重新加热");
-                    diagnostics::filament_history.skip(diagnostics::filament_stage::feed,
-                                                        "同通道无需进线");
-                    if (bed_target_temper_max > 0) {
-                        publish(client, bambu::msg::runGcode(std::string("M190 S") + std::to_string(bed_target_temper_max)));//恢复原来的热床温度
-                    }
-                    mstd::delay(1000ms);//确保暂停动作完成
-                    diagnostics::filament_history.start(diagnostics::filament_stage::resume,
-                                                         "提交恢复打印命令");
-                    const int resume_id = publish(client, bambu::msg::print_resume);
-                    if (resume_id < 0) {
-                        diagnostics::filament_history.fail(diagnostics::filament_stage::resume,
-                                                            "恢复命令提交失败", false);
-                    } else {
-                        diagnostics::filament_history.finish_stage(
-                            diagnostics::filament_stage::resume,
-                            diagnostics::stage_state::success, "恢复命令已提交");
-                        diagnostics::filament_history.finish_run(diagnostics::run_state::skipped);
-                    }
-                    diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
-                                       "CHANGE_SKIPPED", "目标通道与当前通道相同，无需换料");
-                } else {
-                    diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
-                                       "CHANGE_DUPLICATE", "换料进行中，忽略重复消息");
-                }
-            }
-            // 注意：不要在换料过程中恢复bed_target_temper，避免影响换料流程
-            // 换料完成后，bed_target_temper会自然恢复为bed_target_temper_max
-
-        } else {
-            // publish(client,bambu::msg::get_status);//从第二次暂停开始,PAUSE就不会出现在常态消息里,不知道怎么回事
-            // 还是会的,只是不一定和温度改变在一条json里
-        }
-    } else if (bed_target_temper == 0)
-        bed_target_temper_max = 0;// 打印结束
-    else
-        bed_target_temper_max = std::max(bed_target_temper, bed_target_temper_max);// 不同材料可能底板温度不一样,这里选择维持最高的
-
-    // int print_error_now = doc["print"]["print_error"] | -1;
-    // if (print_error_now != -1) {
-    //	fpr_value(print_error_now);
-    //	if (print_error.exchange(print_error_now) != print_error_now)//@_@这种有变动才唤醒的地方可以合并一下
-    //		print_error.notify_one();
-    // }
-
-    int ams_status_now = doc["print"]["ams_status"] | -1;
-    if (ams_status_now != -1) {
+    // Process AMS status even while a cached PAUSE trigger is busy/consumed.
+    // Returning before this update would make an active unload wait miss state 260.
+    if (!print["ams_status"].isNull()) {
+        const int ams_status_now = print["ams_status"].as<int>();
         if (ams_status.exchange(ams_status_now) != ams_status_now) {
             diagnostics::write(diagnostics::level::debug, diagnostics::log_module::filament,
                                "AMS_STATUS", "AMS 状态更新为 " + std::to_string(ams_status_now));
             ams_status.notify_one();
+        }
+    }
+
+    const int bed_target_temper = change_trigger.bed_target();
+    if (bed_target_temper == 0)
+        bed_target_temper_max = 0;// 打印结束
+    else if (!(bed_target_temper > 0 && bed_target_temper < 17))
+        bed_target_temper_max = std::max(bed_target_temper, bed_target_temper_max);
+
+    const auto readiness = change_trigger.evaluate(config::motors.size());
+    if (readiness != last_change_trigger_readiness) {
+        if (readiness == filament_change::trigger_readiness::waiting_for_pause) {
+            diagnostics::write(diagnostics::level::debug, diagnostics::log_module::filament,
+                               "CHANGE_WAITING_FOR_PAUSE",
+                               "已收到目标通道 " + std::to_string(bed_target_temper) +
+                               "，等待打印机进入 PAUSE");
+        } else if (readiness == filament_change::trigger_readiness::waiting_for_channel) {
+            diagnostics::write(diagnostics::level::debug, diagnostics::log_module::filament,
+                               "CHANGE_WAITING_FOR_CHANNEL",
+                               "已收到 PAUSE，等待有效的目标通道标记");
+        }
+        last_change_trigger_readiness = readiness;
+        if (readiness != filament_change::trigger_readiness::ready)
+            change_trigger_busy_logged = false;
+    }
+
+    if (readiness == filament_change::trigger_readiness::invalid_channel) {
+        const int new_extruder = bed_target_temper;
+        const int old_extruder = extruder.get_value();
+        change_trigger.consume();
+        last_change_trigger_readiness = filament_change::trigger_readiness::consumed;
+        diagnostics::filament_history.begin(old_extruder, new_extruder,
+                                             "检测到无效的暂停换料通道");
+        diagnostics::filament_history.finish_stage(diagnostics::filament_stage::trigger,
+                                                    diagnostics::stage_state::error,
+                                                    "目标通道无效");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::unload, "触发失败");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::retract, "触发失败");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::heat, "触发失败");
+        diagnostics::filament_history.skip(diagnostics::filament_stage::feed, "触发失败");
+        diagnostics::write(diagnostics::level::error, diagnostics::log_module::filament,
+                           "CHANGE_INVALID_CHANNEL",
+                           "无效的目标通道: " + std::to_string(new_extruder));
+        if (bed_target_temper_max > 0)
+            publish(client, bambu::msg::runGcode("M190 S" + std::to_string(bed_target_temper_max)));
+        mstd::delay(1000ms);
+        diagnostics::filament_history.start(diagnostics::filament_stage::resume,
+                                             "提交恢复打印命令");
+        const int resume_id = publish(client, bambu::msg::print_resume);
+        diagnostics::filament_history.finish_stage(
+            diagnostics::filament_stage::resume,
+            resume_id < 0 ? diagnostics::stage_state::error : diagnostics::stage_state::success,
+            resume_id < 0 ? "恢复命令提交失败" : "恢复命令已提交");
+        diagnostics::filament_history.finish_run(diagnostics::run_state::error);
+    } else if (readiness == filament_change::trigger_readiness::ready) {
+        const int new_extruder = bed_target_temper;
+        const int old_extruder = extruder.get_value();
+
+        if (system_locked.get_value() || pause_lock.load()) {
+            if (!change_trigger_busy_logged) {
+                diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
+                                   "CHANGE_BUSY", "系统忙碌，保留当前自动换料请求等待重试");
+                change_trigger_busy_logged = true;
+            }
+        } else if (old_extruder != new_extruder) {
+            bool expected = false;
+            if (!pause_lock.compare_exchange_strong(expected, true)) {
+                if (!change_trigger_busy_logged) {
+                    diagnostics::write(diagnostics::level::warning, diagnostics::log_module::filament,
+                                       "CHANGE_BUSY", "换料锁已被占用，保留当前请求等待重试");
+                    change_trigger_busy_logged = true;
+                }
+            } else {
+                diagnostics::filament_history.begin(
+                    old_extruder, new_extruder,
+                    "增量 MQTT 状态合并后确认 PAUSE 与目标通道");
+                diagnostics::filament_history.finish_stage(diagnostics::filament_stage::trigger,
+                                                            diagnostics::stage_state::success,
+                                                            "换料触发已确认");
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                                   "CHANGE_TRIGGER_ACCEPTED",
+                                   "接受自动换料触发: 通道 " + std::to_string(old_extruder) +
+                                   " → " + std::to_string(new_extruder) +
+                                   "（PAUSE + 热床通道标记）");
+                if (bed_target_temper_max > 0)
+                    publish(client, bambu::msg::runGcode("M190 S" + std::to_string(bed_target_temper_max)));
+
+                async_channel.emplace([=]() {
+                    change_filament(client, old_extruder, new_extruder);
+                });
+                change_trigger.consume();
+                last_change_trigger_readiness = filament_change::trigger_readiness::consumed;
+                change_trigger_busy_logged = false;
+                diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                                   "CHANGE_QUEUED",
+                                   "换料任务已入队: 通道 " + std::to_string(old_extruder) +
+                                   " → " + std::to_string(new_extruder));
+            }
+        } else {
+            change_trigger.consume();
+            last_change_trigger_readiness = filament_change::trigger_readiness::consumed;
+            change_trigger_busy_logged = false;
+            diagnostics::filament_history.begin(
+                old_extruder, new_extruder,
+                "增量 MQTT 状态合并后确认同通道暂停");
+            diagnostics::filament_history.finish_stage(diagnostics::filament_stage::trigger,
+                                                        diagnostics::stage_state::success,
+                                                        "换料触发已确认");
+            diagnostics::filament_history.skip(diagnostics::filament_stage::unload,
+                                                "同通道无需退料");
+            diagnostics::filament_history.skip(diagnostics::filament_stage::retract,
+                                                "同通道无需退线");
+            diagnostics::filament_history.skip(diagnostics::filament_stage::heat,
+                                                "同通道无需重新加热");
+            diagnostics::filament_history.skip(diagnostics::filament_stage::feed,
+                                                "同通道无需进线");
+            if (bed_target_temper_max > 0)
+                publish(client, bambu::msg::runGcode("M190 S" + std::to_string(bed_target_temper_max)));
+            mstd::delay(1000ms);
+            diagnostics::filament_history.start(diagnostics::filament_stage::resume,
+                                                 "提交恢复打印命令");
+            const int resume_id = publish(client, bambu::msg::print_resume);
+            if (resume_id < 0) {
+                diagnostics::filament_history.fail(diagnostics::filament_stage::resume,
+                                                    "恢复命令提交失败", false);
+            } else {
+                diagnostics::filament_history.finish_stage(
+                    diagnostics::filament_stage::resume,
+                    diagnostics::stage_state::success, "恢复命令已提交");
+                diagnostics::filament_history.finish_run(diagnostics::run_state::skipped);
+            }
+            diagnostics::write(diagnostics::level::info, diagnostics::log_module::filament,
+                               "CHANGE_SKIPPED", "目标通道与当前通道相同，无需换料");
         }
     }
 
