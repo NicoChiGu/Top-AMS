@@ -58,6 +58,74 @@
             gap: 8px;
         }
 
+        .printer-operation-banner {
+            flex: 1 1 420px;
+            min-width: 0;
+            display: grid;
+            grid-template-columns: 10px minmax(0, 1fr);
+            gap: 8px 10px;
+            align-items: center;
+            padding: 7px 10px;
+            color: var(--primary-color);
+            background: var(--diagnostic-inset);
+            border: 1px solid var(--diagnostic-border);
+            border-radius: 7px;
+        }
+
+        .printer-operation-signal {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--secondary-color);
+        }
+
+        .printer-operation-copy {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+        }
+
+        .printer-operation-title,
+        .printer-operation-detail {
+            overflow-wrap: anywhere;
+        }
+
+        .printer-operation-title {
+            font-weight: 700;
+            line-height: 1.35;
+        }
+
+        .printer-operation-detail {
+            color: var(--text-tertiary);
+            font-size: 11px;
+            line-height: 1.4;
+        }
+
+        .printer-operation-banner.warning {
+            color: #7a4b00;
+            background: rgba(243, 156, 18, 0.09);
+            border-color: rgba(243, 156, 18, 0.35);
+        }
+
+        .printer-operation-banner.warning .printer-operation-signal {
+            background: var(--warning-color);
+        }
+
+        .printer-operation-banner.danger {
+            color: #9f2f24;
+            background: rgba(231, 76, 60, 0.08);
+            border-color: rgba(231, 76, 60, 0.38);
+        }
+
+        .printer-operation-banner.danger .printer-operation-signal {
+            background: var(--danger-color);
+        }
+
+        .printer-operation-banner.normal .printer-operation-signal {
+            background: var(--success-color);
+        }
+
         .network-status {
             min-width: 0;
         }
@@ -507,6 +575,45 @@
             font-variant-numeric: tabular-nums;
         }
 
+        .diagnostic-state-chip.action-code {
+            flex: 1 1 360px;
+            color: var(--primary-color);
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            line-height: 1.45;
+        }
+
+        .operation-trace {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            margin: 0 0 14px;
+        }
+
+        .operation-trace-item {
+            min-width: 0;
+            padding: 9px 10px;
+            background: var(--diagnostic-inset);
+            border: 1px solid var(--diagnostic-border-soft);
+            border-radius: 6px;
+        }
+
+        .operation-trace-label {
+            display: block;
+            margin-bottom: 3px;
+            color: var(--text-tertiary);
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+        }
+
+        .operation-trace-value {
+            display: block;
+            color: var(--primary-color);
+            font-size: 12px;
+            line-height: 1.45;
+            overflow-wrap: anywhere;
+        }
+
         .timeline-summary {
             display: flex;
             align-items: center;
@@ -591,6 +698,17 @@
         .timeline-step.not_reached .timeline-node { border-style: dashed; color: var(--text-muted); }
         .timeline-step.success:not(:last-child)::after { background: var(--success-color); opacity: 0.7; }
         .timeline-step.warning:not(:last-child)::after { background: var(--warning-color); opacity: 0.7; }
+
+        .timeline-step.printer-active .timeline-node {
+            box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.2);
+        }
+
+        .timeline-step.printer-active .timeline-label::after {
+            content: ' · 打印机';
+            color: var(--secondary-color);
+            font-size: 9px;
+            font-weight: 700;
+        }
 
         .timeline-label {
             display: block;
@@ -1103,9 +1221,16 @@
 
         @media (max-width: 768px) {
             .status-bar {
+                flex-wrap: wrap;
                 align-items: flex-start;
                 gap: 12px;
                 padding: 10px 16px;
+            }
+
+            .printer-operation-banner {
+                order: 3;
+                flex-basis: 100%;
+                width: 100%;
             }
 
             .network-status {
@@ -1156,6 +1281,10 @@
             }
 
             .snapshot-groups {
+                grid-template-columns: 1fr;
+            }
+
+            .operation-trace {
                 grid-template-columns: 1fr;
             }
 
@@ -1236,6 +1365,14 @@
                     <span aria-hidden="true">·</span>
                     <span id="wifi-rssi">-- dBm</span>
                 </span>
+            </span>
+        </div>
+        <div class="printer-operation-banner warning" id="printer-operation-banner"
+            role="status" aria-live="assertive" aria-atomic="true">
+            <span class="printer-operation-signal" aria-hidden="true"></span>
+            <span class="printer-operation-copy">
+                <span class="printer-operation-title" id="printer-operation-title">等待打印机状态</span>
+                <span class="printer-operation-detail" id="printer-operation-detail">尚未收到耗材传感器和 AMS 状态</span>
             </span>
         </div>
         <div class="status-indicator mqtt-status-indicator">
@@ -1340,9 +1477,11 @@
                     <span class="diagnostic-state-chip" id="diag-lock">锁定 --</span>
                     <span class="diagnostic-state-chip" id="diag-channel">通道 --</span>
                     <span class="diagnostic-state-chip" id="diag-motor">电机 --</span>
-                    <span class="diagnostic-state-chip" id="diag-ams">AMS --</span>
-                    <span class="diagnostic-state-chip" id="diag-switch">微动 --</span>
-                    <span class="diagnostic-state-chip" id="diag-nozzle">目标温度 --</span>
+                    <span class="diagnostic-state-chip" id="diag-owner">Owner --</span>
+                    <span class="diagnostic-state-chip" id="diag-flow">阶段 --</span>
+                    <span class="diagnostic-state-chip action-code" id="diag-ams">AMS --（等待状态）</span>
+                    <span class="diagnostic-state-chip" id="diag-switch">耗材传感器 --</span>
+                    <span class="diagnostic-state-chip" id="diag-nozzle">喷嘴 -- / --</span>
                 </div>
             </section>
 
@@ -1356,6 +1495,16 @@
                     </div>
                 </div>
                 <p class="timeline-timeout hidden" id="timeline-timeout"></p>
+                <div class="operation-trace" aria-label="打印机与 Top-AMS 当前动作">
+                    <div class="operation-trace-item">
+                        <span class="operation-trace-label">打印机 AMS</span>
+                        <span class="operation-trace-value" id="timeline-printer-action">AMS --（等待状态）</span>
+                    </div>
+                    <div class="operation-trace-item">
+                        <span class="operation-trace-label">TOP-AMS</span>
+                        <span class="operation-trace-value" id="timeline-topams-phase">等待打印机状态</span>
+                    </div>
+                </div>
                 <div class="filament-timeline" id="filament-timeline" aria-live="polite">
                     <div class="timeline-step pending" data-stage="trigger">
                         <span class="timeline-node">1</span><span class="timeline-label">触发</span><span class="timeline-meta">等待换料请求</span>
@@ -1459,7 +1608,7 @@
 
                 <div class="channel-warning">
                     <i class="fas fa-exclamation-triangle"></i>
-                    <span>请确保选择的通道和实际使用中通道一致，要不可能会导致两通道同时进料冲突锁定</span>
+                    <span id="channel-confirmation-hint">检测到有料时，请确认这里与真实通道一致；未确认前辅助送料保持禁用。</span>
                 </div>
                 <div class="channel-indicator">
                     <label for="extruder">当前通道:</label>
@@ -1696,6 +1845,54 @@
         let diagnosticLogClearedThrough = 0;
         let logAutoScroll = true;
         let localLogSequence = 0;
+        let latestPrinterOperation = {
+            ams_status_info: {
+                raw: -1,
+                main: 255,
+                sub: 255,
+                label_zh: '尚未收到打印机 AMS 状态',
+                known: false
+            },
+            printer_fault: {
+                active: false,
+                interlock: false,
+                display_code: '0',
+                label_zh: '无打印机故障',
+                action_zh: '',
+                severity: 'none'
+            },
+            printer_status_ready: false,
+            channel_confirmed: false,
+            channel_confirmation_required: false,
+            hw_switch: -1,
+            current_channel: 0,
+            nozzle_actual_c: -1,
+            nozzle_target_c: -1,
+            motor_owner: 'none',
+            flow_phase: 'idle',
+            updated_ms: 0
+        };
+
+        const flowPhaseLabels = {
+            idle: '空闲',
+            trigger: '确认换料触发',
+            unloading: '等待打印机退料',
+            retracting: '旧通道完整退线',
+            heating: '等待实际喷嘴温度',
+            feed_command: '提交挤出机进料命令',
+            feeding: '目标通道闭环进线',
+            resuming: '恢复热床并提交续打',
+            manual: '手动电机动作',
+            fault: '故障：保持打印暂停'
+        };
+
+        const motorOwnerLabels = {
+            none: '无',
+            manual: '手动',
+            unload: '自动退线',
+            load: '自动进线',
+            assist: '微动辅助'
+        };
 
         function setDiagnosticText(id, value) {
             const element = document.getElementById(id);
@@ -1749,6 +1946,128 @@
             return mqtt?.stale ? `${base} · 数据超时` : base;
         }
 
+        function formatAmsAction(info) {
+            const raw = Number(info?.raw);
+            const code = Number.isFinite(raw) && raw >= 0 ? raw : '--';
+            return `AMS ${code}（${info?.label_zh || '等待状态'}）`;
+        }
+
+        function applyPrinterStageHighlight(info = latestPrinterOperation.ams_status_info) {
+            let stage = '';
+            if (Number(info?.main) === 1) {
+                const sub = Number(info?.sub);
+                if (sub <= 1) stage = 'trigger';
+                else if (sub === 2) stage = 'heat';
+                else if (sub === 3) stage = 'unload';
+                else if (sub === 4) stage = 'retract';
+                else if (sub >= 5 && sub <= 14) stage = 'feed';
+            }
+            document.querySelectorAll('.timeline-step').forEach(element => {
+                element.classList.toggle('printer-active', element.dataset.stage === stage);
+            });
+        }
+
+        function renderPrinterOperationStatus(update = {}) {
+            latestPrinterOperation = {
+                ...latestPrinterOperation,
+                ...update,
+                ams_status_info: {
+                    ...latestPrinterOperation.ams_status_info,
+                    ...(update.ams_status_info || {})
+                },
+                printer_fault: {
+                    ...latestPrinterOperation.printer_fault,
+                    ...(update.printer_fault || {})
+                }
+            };
+
+            const state = latestPrinterOperation;
+            const info = state.ams_status_info || {};
+            const fault = state.printer_fault || {};
+            const amsAction = formatAmsAction(info);
+            const phaseText = flowPhaseLabels[state.flow_phase] || state.flow_phase || '--';
+            const ownerText = motorOwnerLabels[state.motor_owner] || state.motor_owner || '--';
+            const banner = document.getElementById('printer-operation-banner');
+            const title = document.getElementById('printer-operation-title');
+            const detail = document.getElementById('printer-operation-detail');
+
+            let bannerClass = 'normal';
+            let titleText = amsAction;
+            let detailText = `Top-AMS：${phaseText} · 电机 owner：${ownerText}`;
+            if (fault.active) {
+                bannerClass = ['critical', 'error'].includes(fault.severity) ? 'danger' : 'warning';
+                titleText = `${fault.display_code || fault.raw_code || '故障'}（${fault.label_zh || '打印机故障'}）`;
+                detailText = [fault.action_zh,
+                    fault.interlock !== false ? '电机已停止，打印保持暂停。' : ''].filter(Boolean).join(' ');
+            } else if (state.flow_phase === 'fault') {
+                bannerClass = 'danger';
+                titleText = state.printer_status_ready
+                    ? '换料流程已安全停止'
+                    : 'MQTT 或打印机状态已中断';
+                detailText = '请查看系统诊断中的失败阶段，排除问题后手动重试；电机已停止，打印保持暂停。';
+            } else if (!state.printer_status_ready) {
+                bannerClass = 'warning';
+                titleText = '等待打印机状态';
+                detailText = '尚未取得真实耗材传感器状态，辅助送料和自动流程已禁用。';
+            } else if (state.channel_confirmation_required) {
+                bannerClass = 'warning';
+                titleText = '请确认当前通道';
+                detailText = '打印机检测到有料，但 Top-AMS 不会猜测真实通道；确认前辅助送料已禁用。';
+            }
+
+            if (banner) {
+                banner.className = `printer-operation-banner ${bannerClass}`;
+                const raw = Number(info.raw);
+                const hex = Number.isFinite(raw) && raw >= 0
+                    ? `0x${raw.toString(16).toUpperCase().padStart(4, '0')}` : '--';
+                banner.title = `${hex} · 主状态 ${info.main ?? '--'} · 子步骤 ${info.sub ?? '--'} · 设备时间 ${formatLogUptime(Number(state.updated_ms))}`;
+            }
+            if (title) title.textContent = titleText;
+            if (detail) detail.textContent = detailText;
+
+            setDiagnosticText('diag-ams', amsAction);
+            const diagAms = document.getElementById('diag-ams');
+            if (diagAms && banner) diagAms.title = banner.title;
+            setDiagnosticText('diag-flow', `阶段 ${phaseText}`);
+            setDiagnosticText('diag-owner', `Owner ${ownerText}`);
+            setDiagnosticText('timeline-printer-action', amsAction);
+            setDiagnosticText('timeline-topams-phase', phaseText);
+            applyPrinterStageHighlight(info);
+
+            const channel = Number(state.current_channel) || 0;
+            const channelText = channel > 0
+                ? `${channel}${state.channel_confirmed ? '（已确认）' : '（未确认）'}`
+                : state.hw_switch === 1 ? '待确认' : '无';
+            setDiagnosticText('diag-channel', `通道 ${channelText}`);
+            setDiagnosticText('diag-switch', `耗材传感器 ${state.hw_switch === 1 ? '有料' : state.hw_switch === 0 ? '无料' : '未知'}`);
+            const actual = Number(state.nozzle_actual_c);
+            const target = Number(state.nozzle_target_c);
+            setDiagnosticText('diag-nozzle', `喷嘴 ${Number.isFinite(actual) && actual >= 0 ? `${actual.toFixed(1)}°C` : '--'} / ${Number.isFinite(target) && target >= 0 ? `${target}°C` : '--'}`);
+
+            const currentExtruder = document.getElementById('current-extruder');
+            if (currentExtruder) {
+                if (channel > 0) {
+                    currentExtruder.textContent = `通道 ${channel}${state.channel_confirmed ? '' : '（未确认）'}`;
+                    currentExtruder.className = `status-value ${state.channel_confirmed ? 'idle' : 'locked'}`;
+                } else if (state.hw_switch === 1) {
+                    currentExtruder.textContent = '有料，通道待确认';
+                    currentExtruder.className = 'status-value locked';
+                } else {
+                    currentExtruder.textContent = state.hw_switch === 0 ? '无耗材' : '状态未知';
+                    currentExtruder.className = 'status-value';
+                }
+            }
+
+            const hint = document.getElementById('channel-confirmation-hint');
+            if (hint) {
+                hint.textContent = state.channel_confirmation_required
+                    ? '打印机检测到有料：请选择真实当前通道完成确认；系统不会默认使用通道 1。'
+                    : '检测到有料时，请确认这里与真实通道一致；未确认前辅助送料保持禁用。';
+            }
+
+            updateButtonStates();
+        }
+
         function renderDiagnosticSnapshot(snapshot) {
             if (!snapshot) return;
             if (latestDiagnosticSnapshot &&
@@ -1787,11 +2106,25 @@
             const operationLabels = { idle: '空闲', changing: '换料中', loading: '上料中' };
             setDiagnosticText('diag-operation', `操作 ${operationLabels[system.operation_status] || system.operation_status || '--'}`);
             setDiagnosticText('diag-lock', `锁定 ${system.locked ? '是' : '否'}`);
-            setDiagnosticText('diag-channel', `通道 ${system.current_channel > 0 ? system.current_channel : '无'}`);
             setDiagnosticText('diag-motor', `电机 ${system.motor_running > 0 ? system.motor_running : '无'}`);
-            setDiagnosticText('diag-ams', `AMS ${Number.isFinite(system.ams_status) ? system.ams_status : '--'}`);
-            setDiagnosticText('diag-switch', `微动 ${system.hw_switch === 1 ? '有料' : system.hw_switch === 0 ? '无料' : '--'}`);
-            setDiagnosticText('diag-nozzle', `目标温度 ${Number.isFinite(system.nozzle_target_c) && system.nozzle_target_c >= 0 ? `${system.nozzle_target_c}°C` : '--'}`);
+            renderPrinterOperationStatus({
+                ams_status_info: system.ams_status_info || {
+                    raw: system.ams_status,
+                    label_zh: '等待解码',
+                    known: false
+                },
+                printer_fault: system.printer_fault,
+                printer_status_ready: system.printer_status_ready,
+                channel_confirmed: system.channel_confirmed,
+                channel_confirmation_required: system.channel_confirmation_required,
+                current_channel: system.current_channel,
+                hw_switch: system.hw_switch,
+                nozzle_actual_c: system.nozzle_actual_c,
+                nozzle_target_c: system.nozzle_target_c,
+                motor_owner: system.motor_owner,
+                flow_phase: system.flow_phase,
+                updated_ms: system.updated_ms
+            });
 
             const freshness = document.getElementById('diagnostic-freshness');
             if (freshness) {
@@ -1835,6 +2168,7 @@
                     timeoutElement.textContent = '';
                     timeoutElement.classList.add('hidden');
                 }
+                applyPrinterStageHighlight();
                 return;
             }
 
@@ -1875,6 +2209,7 @@
                     timeoutElement.classList.add('hidden');
                 }
             }
+            applyPrinterStageHighlight();
         }
 
         function normalizeDiagnosticEvent(item, local = false) {
@@ -2054,6 +2389,10 @@
 
         function handleDiagnosticMessage(doc) {
             if (!doc?.type) return false;
+            if (doc.type === 'printer_operation_status') {
+                renderPrinterOperationStatus(doc.payload || {});
+                return true;
+            }
             if (doc.type === 'diagnostics_snapshot') {
                 renderDiagnosticSnapshot(doc.payload);
                 return true;
@@ -2192,6 +2531,7 @@
                 freshness.textContent = '设备连接已断开';
                 freshness.classList.remove('live');
             }
+            renderPrinterOperationStatus({ printer_status_ready: false });
             addLog('WebSocket 连接已关闭', 'warning');
         };
 
@@ -2205,6 +2545,9 @@
         function updateButtonStates() {
             const allMotorButtons = document.querySelectorAll('.btn.primary, .btn.warning, .btn.success');
             const isLocked = systemLocked || operationStatus !== 'idle';
+            const printerFault = latestPrinterOperation?.printer_fault;
+            const safetyBlocked = !latestPrinterOperation?.printer_status_ready ||
+                (printerFault?.active && printerFault?.interlock !== false);
 
             allMotorButtons.forEach(btn => {
                 const onclick = btn.getAttribute('onclick');
@@ -2217,15 +2560,16 @@
                         const isThisMotorRunning = motorRunning === motorId;
                         
                         // 如果系统锁定、操作进行中或该电机正在运行，禁用按钮
-                        btn.disabled = isLocked || isThisMotorRunning;
+                        btn.disabled = isLocked || isThisMotorRunning || safetyBlocked;
                         
                         // 添加视觉反馈
                         if (isThisMotorRunning) {
                             btn.classList.add('motor-running');
                             btn.title = `通道 ${motorId} 正在运行`;
-                        } else if (isLocked) {
+                        } else if (isLocked || safetyBlocked) {
                             btn.classList.remove('motor-running');
-                            btn.title = operationStatus === 'changing' ? '系统换料中' : 
+                            btn.title = safetyBlocked ? '打印机状态未就绪或故障尚未清除' :
+                                        operationStatus === 'changing' ? '系统换料中' :
                                         operationStatus === 'loading' ? '系统上料中' : '系统锁定中';
                         } else {
                             btn.classList.remove('motor-running');
@@ -2238,7 +2582,9 @@
             // 同时禁用当前通道选择器（如果系统锁定）
             const extruderSelect = document.getElementById('extruder');
             if (extruderSelect) {
-                extruderSelect.disabled = isLocked;
+                extruderSelect.disabled = isLocked ||
+                    !latestPrinterOperation?.printer_status_ready ||
+                    latestPrinterOperation?.hw_switch !== 1;
             }
 
             // 方向配置会影响后续GPIO输出，任何电机运行时都禁止修改。
@@ -2294,6 +2640,7 @@
                         updateButtonStates();
                     } else if (item.name == 'motor_running') {
                         motorRunning = item.value || 0;
+                        setDiagnosticText('diag-motor', `电机 ${motorRunning > 0 ? motorRunning : '无'}`);
                         const motorEl = document.getElementById('motor-running');
                         if (motorEl) {
                             motorEl.textContent = motorRunning > 0 ? `通道 ${motorRunning}` : '无';
@@ -2304,6 +2651,10 @@
                             }
                         }
                         updateButtonStates();
+                    } else if (item.name == 'motor_owner') {
+                        renderPrinterOperationStatus({ motor_owner: item.value || 'none' });
+                    } else if (item.name == 'flow_phase') {
+                        renderPrinterOperationStatus({ flow_phase: item.value || 'idle' });
                     } else if (item.name == 'operation_status') {
                         operationStatus = item.value || 'idle';
                         const statusEl = document.getElementById('operation-status');
@@ -2318,23 +2669,19 @@
                         }
                         updateButtonStates();
                     } else if (item.name == 'extruder') {
-                        // 更新当前使用中通道显示
-                        const extruderEl = document.getElementById('current-extruder');
-                        if (extruderEl) {
-                            const channelNum = item.value || 0;
-                            if (channelNum > 0) {
-                                extruderEl.textContent = `通道 ${channelNum}`;
-                                extruderEl.className = 'status-value idle';
-                            } else {
-                                extruderEl.textContent = '无耗材';
-                                extruderEl.className = 'status-value';
-                            }
-                        }
-                        // 同时更新通道选择下拉框的值
+                        const channelNum = Number(item.value) || 0;
                         const extruderSelect = document.getElementById('extruder');
                         if (extruderSelect) {
-                            extruderSelect.value = item.value || 0;
+                            extruderSelect.value = channelNum;
                         }
+                        renderPrinterOperationStatus({ current_channel: channelNum });
+                    } else if (item.name == 'extruder_confirmed') {
+                        renderPrinterOperationStatus({
+                            channel_confirmed: item.value === true || item.value === 1,
+                            channel_confirmation_required:
+                                latestPrinterOperation.hw_switch === 1 &&
+                                !(item.value === true || item.value === 1)
+                        });
                     } else if (item.name == 'assist_feeding_enabled') {
                         // 更新辅助进料开关状态
                         const switchEl = document.getElementById('assist-feeding-switch');
@@ -2550,14 +2897,14 @@
                 option.textContent = `通道 ${i}`;
                 extruderSelect.appendChild(option);
             }
-            // 默认选择通道1
-            extruderSelect.value = 1;
+            // 未收到打印机真实状态前不猜测当前通道。
+            extruderSelect.value = '';
             
-            // 初始化当前通道显示（默认通道1）
+            // 初始化当前通道显示为待确认。
             const currentExtruderEl = document.getElementById('current-extruder');
             if (currentExtruderEl) {
-                currentExtruderEl.textContent = '通道 1';
-                currentExtruderEl.className = 'status-value idle';
+                currentExtruderEl.textContent = '等待打印机状态';
+                currentExtruderEl.className = 'status-value warning';
             }
             
             // 初始化状态指示器

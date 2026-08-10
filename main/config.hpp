@@ -17,6 +17,14 @@ namespace config {
     // using string = String;
     using std::string;
 
+#ifdef MOTORS_4
+    inline constexpr size_t active_motor_count = 4;
+#elif defined(MOTORS_6)
+    inline constexpr size_t active_motor_count = 6;
+#else
+    inline constexpr size_t active_motor_count = 8;
+#endif
+
     struct motor {
         gpio_num_t forward = GPIO_NUM_NC;
         gpio_num_t backward = GPIO_NUM_NC;

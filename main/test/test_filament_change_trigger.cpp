@@ -54,9 +54,9 @@ TEST_CASE("filament trigger consumes one pause only once", "[filament][trigger]"
 TEST_CASE("filament trigger rejects invalid and ordinary temperatures", "[filament][trigger]") {
     trigger_state state;
     state.update_gcode_state("PAUSE");
-    state.update_bed_target(9);
+    state.update_bed_target(13);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(trigger_readiness::invalid_channel),
-                          static_cast<int>(state.evaluate(8)));
+                          static_cast<int>(state.evaluate(4)));
 
     state.update_bed_target(60);
     TEST_ASSERT_EQUAL_INT(static_cast<int>(trigger_readiness::waiting_for_channel),

@@ -15,6 +15,19 @@ enum class trigger_readiness {
     consumed,
 };
 
+enum class trigger_kind {
+    none,
+    filament_change,
+    initial_load,
+};
+
+struct trigger_request {
+    trigger_kind kind = trigger_kind::none;
+    int channel = 0;
+    bool marker = false;
+    bool valid = false;
+};
+
 class trigger_state {
   public:
     void reset() {
@@ -42,21 +55,35 @@ class trigger_state {
         return gcode_state_;
     }
 
+    [[nodiscard]] trigger_request request(std::size_t channel_count) const noexcept {
+        trigger_request result;
+        result.marker = bed_target_ > 0 && bed_target_ < 17;
+        if (bed_target_ >= 1 && static_cast<std::size_t>(bed_target_) <= channel_count) {
+            result.kind = trigger_kind::filament_change;
+            result.channel = bed_target_;
+            result.valid = true;
+        } else if (bed_target_ >= 9 &&
+                   static_cast<std::size_t>(bed_target_ - 8) <= channel_count) {
+            result.kind = trigger_kind::initial_load;
+            result.channel = bed_target_ - 8;
+            result.valid = true;
+        }
+        return result;
+    }
+
     [[nodiscard]] trigger_readiness evaluate(std::size_t channel_count) const noexcept {
         const bool paused = gcode_state_ == "PAUSE";
-        const bool valid_channel = bed_target_ >= 1 &&
-                                   static_cast<std::size_t>(bed_target_) <= channel_count;
-        const bool channel_marker = bed_target_ > 0 && bed_target_ < 17;
+        const trigger_request decoded = request(channel_count);
 
         if (consumed_ && paused)
             return trigger_readiness::consumed;
-        if (paused && valid_channel)
+        if (paused && decoded.valid)
             return trigger_readiness::ready;
-        if (paused && channel_marker)
+        if (paused && decoded.marker)
             return trigger_readiness::invalid_channel;
         if (paused)
             return trigger_readiness::waiting_for_channel;
-        if (valid_channel)
+        if (decoded.valid)
             return trigger_readiness::waiting_for_pause;
         return trigger_readiness::idle;
     }

@@ -1,7 +1,6 @@
 ;===== A1mini Top-AMS版本 =====
 ;===== 基于原版20251031修改 =====
-;===== Top-AMS自动换料版本，保留完整冲刷逻辑 =====
-;===== 移除暂停前的原厂AMS换料链路，添加通道通知和自动换料触发暂停 =====
+;===== Top-AMS闭环换料版本，保留官方安全前导、冲刷和恢复逻辑 =====
 
 ; 实现：如果前后通道一致，直接返回，跳过所有换料操作；如果不一致，继续执行
 {if next_extruder == previous_extruder || next_extruder >= 255}
@@ -10,49 +9,29 @@
 ; 设置打印板温度为 next_extruder + 1，用于通知外部设备换料
 M140 S{next_extruder + 1};EXT
 
-; 已注释：退料前的准备动作由 main.cpp 中的退料流程处理
-; G392 S0
-; M1007 S0
-; M204 S9000
-; {if toolchange_count > 1}
-; {if z_hop_types[current_extruder] == 0 || z_hop_types[current_extruder] == 3}
-; G17
-; G2 Z{z_after_toolchange + 0.4} I0.86 J0.86 P1 F10000 ; spiral lift a little from second lift
-; {endif}
-; {endif}
-; G1 Z{max_layer_z + 3.0} F1200
+;===== 暂停前恢复官方安全前导 =====
+G392 S0
+M1007 S0 ; turn off mass estimation during filament change
+M204 S9000
+G1 Z{max_layer_z + 3.0} F1200
 
 M400
 M106 P1 S0
 M106 P2 S0
-; 已注释：旧耗材温度设置由 main.cpp 中的退料流程处理
-; {if old_filament_temp > 142 && next_extruder < 255}
-; M104 S[old_filament_temp]
-; {endif}
+{if old_filament_temp > 142 && next_extruder < 255}
+M104 S[old_filament_temp]
+{endif}
 
-; 已注释：移动到换料位置的操作由 main.cpp 中的退料流程处理
-; G1 X180 F18000
-;
-; ;===== Top-AMS自动换料部分 =====
-; ; 移动到换料位置
-; G1 Y90 F9000
-
-; 已注释：M400和G92 E0重置由 main.cpp 中的退料流程处理
-; M400
-; G92 E0
+;===== 安全停靠到 A1 mini 换料位置 =====
+G1 X180 F18000
+G1 Y90 F9000
+M400
+G92 E0
 
 ;===== Top-AMS触发暂停点 =====
-; 移动到切割位置
 G1 X-13.5 F18000
 M400
-
-; 切割线材（推出一小段然后回退）
-; 已注释：退料逻辑由 main.cpp 中的快速退料命令处理
-; G1 E10 F200
-; G1 E-10 F200
-; G1 E-20 F500
-
-; 暂停等待Top-AMS自动退料、选通道和进料；完成后ESP32会自动恢复打印
+; 暂停等待 Top-AMS 完成退料、退线、加热和传感器闭环进料
 M400 U1
 
 ;===== 继续执行冲刷逻辑 =====
@@ -235,10 +214,7 @@ M622 J1
   M106 P1 S0 
 M623
 
-;===== AMS命令跳过 =====
-; 由于没有AMS，以下三行仅用于抑制T[next_extruder]命令
-; 如果省略这些行，T[next_extruder]命令会在本代码后执行，
-; 导致系统挂起，因为工具更换命令会等待AMS
+;===== 切片器工具状态同步（固定保留在恢复段） =====
 M620 S[next_extruder]A
 T[next_extruder]
 M621 S[next_extruder]A

@@ -73,6 +73,10 @@ M975 S1 ; turn on
 G1 X0.0 F30000
 G1 X-13.5 F3000
 
+M140 S{initial_no_support_extruder + 9};EXT_INIT
+M400 U1
+M140 S[bed_temperature_initial_layer_single]
+
 M620 M ;enable remap
 M620 S[initial_no_support_extruder]A   ; switch material if AMS exist
     G392 S0 ;turn on clog detect
